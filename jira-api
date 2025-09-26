@@ -1,0 +1,179 @@
+#!/usr/bin/env bash
+
+SELF=$(basename $0)
+
+# Full path to the Jira UI view
+JIRA_URL=${JIRA_URL:-https://indeed.atlassian.net}
+
+# Generic options to pass to `curl` before the method & headers
+CURL_OPTS=${CURL_OPTS:--s}
+
+# Path to the API endpoint.
+JIRA_API_URL=${JIRA_URL}/rest/api/latest
+
+# "username" to use to search for the key in the keychain
+TOKEN_ACCOUNT=${TOKEN_ACCOUNT:-$LDAPUSER}@indeed.com
+
+function usage {
+    cat <<USAGE
+$SELF: Convenience wrapper for the Jira API.
+
+USAGE:
+    $SELF method path [rest...]
+
+ARGUMENTS:
+    method
+        HTTP method to use when making the Jira request. GET, POST, PUT, etc.
+    path
+        Path relative to ${JIRA_API_URL} of the API request.
+    rest...
+        All other arguments are blindly forwarded to \`curl\`.
+
+EXAMPLES:
+    jira-api GET /issue/CHICKEN-188
+    jira-api POST /issue/CHICKEN-188/remotelink -d '...'
+
+# Jira API Usage
+
+## Creating a ticket
+
+The \`jira-api\` tool is a wrapper around curl for the Jira REST API.
+
+**Correct syntax:**
+
+    jira-api POST /issue -d '{"fields": {"project": {"key": "CIPLAT"}, "summary": "ticket title", "description": "ticket description", "issuetype": {"id": "10009"}}}'
+
+**Important notes:**
+- Do NOT add explicit \`-H "Content-Type: application/json"\` header - this causes HTTP 415 errors due to duplication
+- The tool automatically handles authentication and headers
+- Not every project has the same ticket types available
+- A successful response has some kind of reference to the object that was just modified or created, empty responses are typically errors.
+- Use Jira markup/wiki formatting, NOT Markdown, in ticket descriptions and comments
+
+**CIPLAT Project Issue Type IDs:**
+- Bug: "10017" - A problem or error
+- Epic: "10000" - A big user story that needs to be broken down
+- Improvement: "11078" - An improvement or enhancement to an existing feature or task
+- New Feature: "11081" - A new feature of the product, which has yet to be developed
+- Task: "10009" - A task that needs to be done
+- Sub-task: "10010" - The sub-task of the issue (subtask type)
+- Deploy: "11028" - Do NOT use (Proctor process only)
+
+**Examples for different issue types:**
+
+    # Create a Bug
+    jira-api POST /issue -d '{"fields": {"project": {"key": "CIPLAT"}, "summary": "Fix authentication issue", "description": "Users cannot log in due to token validation error", "issuetype": {"id": "10017"}}}'
+
+    # Create a New Feature
+    jira-api POST /issue -d '{"fields": {"project": {"key": "CIPLAT"}, "summary": "Add dark mode support", "description": "Implement dark mode theme for better user experience", "issuetype": {"id": "11081"}}}'
+
+    # Create a Task
+    jira-api POST /issue -d '{"fields": {"project": {"key": "CIPLAT"}, "summary": "Update documentation", "description": "Update API documentation with latest changes", "issuetype": {"id": "10009"}}}'
+
+**Example response:**
+{"id":"8089978","key":"CIPLAT-2218","self":"https://indeed.atlassian.net/rest/api/latest/issue/8089978"}
+
+## Required Content by Issue Type
+
+**Task, New Feature, and Improvement tickets should include:**
+- Acceptance Criteria section (h3. Acceptance Criteria)
+- Business Case section (h3. Business Case)
+
+**Bug tickets should include:**
+- Steps to Reproduce section (h3. Steps to Reproduce)
+- Impact section (h3. Impact)
+
+## Required Fields by Issue Type
+
+**Bug tickets require the Environments field:**
+
+    jira-api POST /issue -d '{"fields": {"project": {"key": "CIPLAT"}, "summary": "Bug title", "description": "Bug description", "issuetype": {"id": "10017"}, "customfield_11674": [{"id": "13373"}]}}'
+
+**Environment IDs:**
+- PROD: "13373" - Production environment
+- STAGE: "13374" - Staging environment  
+- QA: "13375" - QA environment
+- DEV: "13376" - Development environment
+- N/A: "13372" - Not applicable
+- OFFICE: "13377" - Office environment
+
+## Linking tickets to epics
+
+To create a ticket as a child of an epic, add the Epic Link field:
+
+    jira-api POST /issue -d '{"fields": {"project": {"key": "CIPLAT"}, "summary": "Child task", "description": "Task description", "issuetype": {"id": "10009"}, "customfield_10014": "CIPLAT-2150"}}'
+
+## Creating issue links
+
+To link two tickets together (without comments):
+
+    jira-api POST /issueLink -d '{"type": {"name": "Relates"}, "inwardIssue": {"key": "CIPLAT-2227"}, "outwardIssue": {"key": "CIPLAT-2039"}}'
+
+## Discovering required fields
+
+To see what fields are required for a specific issue type:
+
+    jira-api GET '/issue/createmeta?projectKeys=CIPLAT&issuetypeIds=10017&expand=projects.issuetypes.fields'
+
+## Getting project metadata
+
+To see available issue types and required fields:
+
+    jira-api GET '/issue/createmeta?projectKeys=CIPLAT&expand=projects.issuetypes.fields'
+
+USAGE
+    exit 1
+}
+
+function get_token {
+    [[ -v JIRA_TOKEN ]] && return 0
+
+    local domain="${JIRA_URL#*://}"
+    domain="${domain%%/*}"
+    JIRA_TOKEN=$(security find-internet-password \
+        -s "$domain" \
+        -a "$TOKEN_ACCOUNT" \
+        -w)
+
+    [[ $? == 0 ]] && return 0
+
+    local entry_comment="Autogenerated by $SELF script."
+    cat <<TOKEN >&2
+Could not find either a JIRA_TOKEN environment variable or an appropriate
+OSX keychain entry. This script will prompt you for your Jira password and
+save it in the OSX keychain as an entry with the following details:
+
+    Name: $domain
+    Kind: Internet password
+    Account: $TOKEN_ACCOUNT
+    Where: $JIRA_URL
+    Comment: $entry_comment
+
+TOKEN
+    echo -n "Password for $JIRA_URL: " >&2
+    read -s JIRA_TOKEN
+    security add-internet-password \
+        -a "$TOKEN_ACCOUNT" \
+        -s "$domain" \
+        -r htps \
+        -j "$entry_comment" \
+        -w "$JIRA_TOKEN"
+}
+
+call_api() {
+    local method=$1
+    # relative to JIRA_API_URL
+    local path=$2
+    shift 2 || usage
+
+    get_token || return 0
+
+    curl "$CURL_OPTS" -X "$method" \
+        --user "$TOKEN_ACCOUNT:$JIRA_TOKEN" \
+        -H "Content-Type: application/json" \
+        "${JIRA_API_URL%/}/${path#/}" \
+        "$@"
+}
+
+call_api "$@"
+

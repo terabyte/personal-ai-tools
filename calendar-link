@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+
+# Uses instructions from https://www.formsite.com/blog/google-calendar-links/
+
+SELF="$0"
+CALENDAR_PREFIX=https://www.google.com/calendar/render
+
+function usage {
+    cat <<END
+${SELF}: Generate a URL that creates a Google Calendar event.
+
+USAGE
+
+    ${SELF} -t TITLE -d DATES [-l LOCATION] [-D DESCRIPTION] [-tz TIMEZONE]
+
+ARGUMENTS
+
+    -t TITLE
+        Required title of the event. This is what shows up as the text for the
+        event in the calendar view.
+    -d DATES
+        Required dates or datetimes of the bounds of the event. Use one of
+        these formats:
+
+            YYYYMMDD/YYYYMMDD
+            YYYYMMDDTHHMMSS/YYYYMMDDTHHMMSS
+
+        For all-day events, specify the day of the event and the day *after*
+        the event. For events with timestamps, note the literal \`T\`.
+    -l LOCATION
+        Opional string that will be copied directly into the "Location" field
+        of the event.
+    -D DESCRIPTION
+        Optional string that will be copied directly into the "Description"
+        field of the event.
+    -z TIMEZONE
+        Optional timezone of the event. (Google Calendar uses the user's local
+        TZ by default.) Can be anything in the \`tz\` database:
+        https://en.wikipedia.org/wiki/List_of_tz_database_time_zones
+END
+}
+
+function generate {
+    local OPT OPTIND OPTARG
+    declare -A params
+
+    params[action]='TEMPLATE'
+
+    while getopts t:d:l:D:z: OPT ; do
+        case "$OPT" in
+            t) params[title]="$OPTARG" ;;
+            d) params[dates]="$OPTARG" ;;
+            l) params[location]="$OPTARG" ;;
+            D) params[description]="$OPTARG" ;;
+            z) params[ctz]="$OPTARG" ;;
+        esac
+    done
+
+    [[ "${params[title]-x}" == x ]] && \
+        usage && echo -e "\n-t TITLE is required" && \
+        return 1
+    [[ "${params[dates]-x}" == x ]] && \
+        usage && echo -e "\n-d DATES is required" && \
+        return 1
+
+    declare -a query
+    for OPT in "${!params[@]}" ; do
+        query+=("${OPT}=${params[${OPT}]}")
+    done
+
+    local IFS='&'
+    echo "${CALENDAR_PREFIX}?${query[*]}"
+}
+
+generate $@
+

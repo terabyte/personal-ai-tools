@@ -1,0 +1,388 @@
+#!/usr/bin/env python3
+"""
+Jira ticket export script with pagination, retry logic, and full field/history export.
+"""
+
+import requests
+import json
+import time
+import sys
+import os
+from pathlib import Path
+from typing import Dict, List, Any, Optional
+import argparse
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
+class JiraExporter:
+    def __init__(self, base_url: str, email: str, api_token: str, include_metadata: bool = False):
+        self.base_url = base_url.rstrip('/')
+        self.email = email
+        self.api_token = api_token
+        self.include_metadata = include_metadata
+        self.session = self._create_session()
+
+    def _create_session(self) -> requests.Session:
+        """Create a requests session with retry strategy."""
+        session = requests.Session()
+
+        # Retry strategy
+        retry_strategy = Retry(
+            total=5,
+            backoff_factor=2,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["GET"]
+        )
+
+        adapter = HTTPAdapter(max_retries=retry_strategy)
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)
+
+        # Authentication
+        session.auth = (self.email, self.api_token)
+        session.headers.update({
+            'Accept': 'application/json',
+            'Content-Type': 'application/json'
+        })
+
+        return session
+
+    def _process_issues_with_field_names(self, issues: List[Dict], field_names: Dict[str, str]) -> List[Dict]:
+        """Process issues to use readable field names directly, reducing duplication."""
+        processed_issues = []
+
+        for issue in issues:
+            processed_issue = issue.copy()
+
+            # Replace field IDs with readable names in the fields section
+            if 'fields' in issue:
+                readable_fields = {}
+                for field_id, value in issue['fields'].items():
+                    field_name = field_names.get(field_id, field_id)
+                    # Only use readable name if it's different from field_id (i.e., it's a custom field)
+                    if field_name != field_id and field_id.startswith('customfield_'):
+                        readable_fields[field_name] = value
+                    else:
+                        readable_fields[field_id] = value
+
+                processed_issue['fields'] = readable_fields
+
+            # Also process changelog if present
+            if 'changelog' in issue and 'histories' in issue['changelog']:
+                for history in issue['changelog']['histories']:
+                    if 'items' in history:
+                        for item in history['items']:
+                            if 'field' in item:
+                                readable_name = field_names.get(item['field'], item['field'])
+                                if readable_name != item['field']:
+                                    item['field'] = readable_name
+
+            processed_issues.append(processed_issue)
+
+        return processed_issues
+
+    def export_tickets(self, jql: str, output_file: str = "jira_export.json") -> None:
+        """Export all tickets matching JQL query with full fields and history."""
+        print(f"Starting export for JQL: {jql}")
+
+        all_tickets = []
+        max_results = 100  # Jira API limit
+        field_names = {}
+        next_page_token = None
+        page_number = 1
+
+        while True:
+            try:
+                print(f"Fetching page {page_number} (up to {max_results} tickets)...")
+
+                # Make API request using new JQL endpoint
+                url = f"{self.base_url}/rest/api/3/search/jql"
+
+                # Base expansions for analysis
+                expansions = ['changelog', 'names', 'schema']
+
+                # Add metadata expansions if requested
+                if self.include_metadata:
+                    expansions.extend(['renderedFields', 'operations', 'editmeta', 'transitions'])
+
+                params = {
+                    'jql': jql,
+                    'expand': ','.join(expansions),
+                    'fields': '*all',
+                    'maxResults': max_results
+                }
+
+                # Add pagination token if we have one
+                if next_page_token:
+                    params['nextPageToken'] = next_page_token
+
+                response = self._make_request(url, params)
+
+                if not response:
+                    print("Failed to get response, stopping...")
+                    break
+
+                # Parse response
+                data = response.json()
+                issues = data.get('issues', [])
+                batch_field_names = data.get('names', {})
+                next_page_token = data.get('nextPageToken')
+                is_last = data.get('isLast', True)
+
+                # Merge field names (they should be consistent across batches)
+                field_names.update(batch_field_names)
+
+                if not issues:
+                    print("No more issues to fetch")
+                    break
+
+                # Process issues to add readable field names
+                processed_issues = self._process_issues_with_field_names(issues, batch_field_names)
+                all_tickets.extend(processed_issues)
+                print(f"Fetched {len(issues)} tickets. Total so far: {len(all_tickets)}")
+
+                # Check if we're done
+                if is_last or not next_page_token:
+                    print("Reached last page")
+                    break
+
+                page_number += 1
+
+                # Rate limiting - be nice to the API
+                time.sleep(0.5)
+
+            except KeyboardInterrupt:
+                print("\nExport interrupted by user. Saving partial results...")
+                break
+            except Exception as e:
+                print(f"Error during export: {e}")
+                print("Saving partial results...")
+                break
+
+        # Save results
+        self._save_results(all_tickets, output_file, len(all_tickets), field_names)
+
+    def _make_request(self, url: str, params: Dict) -> Optional[requests.Response]:
+        """Make HTTP request with retry logic."""
+        max_attempts = 3
+
+        for attempt in range(max_attempts):
+            try:
+                response = self.session.get(url, params=params, timeout=30)
+                response.raise_for_status()
+                return response
+
+            except requests.exceptions.HTTPError as e:
+                if response.status_code == 429:
+                    # Rate limited - wait longer
+                    retry_after = int(response.headers.get('Retry-After', 60))
+                    print(f"Rate limited. Waiting {retry_after} seconds...")
+                    time.sleep(retry_after)
+                    continue
+                elif response.status_code in [500, 502, 503, 504]:
+                    # Server error - retry with backoff
+                    wait_time = (2 ** attempt) * 5
+                    print(f"Server error {response.status_code}. Retrying in {wait_time} seconds...")
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    print(f"HTTP error {response.status_code}: {e}")
+                    return None
+
+            except requests.exceptions.RequestException as e:
+                wait_time = (2 ** attempt) * 2
+                print(f"Request failed (attempt {attempt + 1}/{max_attempts}): {e}")
+                if attempt < max_attempts - 1:
+                    print(f"Retrying in {wait_time} seconds...")
+                    time.sleep(wait_time)
+                else:
+                    print("Max retries exceeded")
+                    return None
+
+        return None
+
+    def _save_results(self, tickets: List[Dict], output_file: str, total_expected: Optional[int], field_names: Dict[str, str] = None) -> None:
+        """Save tickets to JSON file."""
+        try:
+            # Create export metadata
+            export_data = {
+                'metadata': {
+                    'export_timestamp': time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime()),
+                    'total_tickets_fetched': len(tickets),
+                    'total_tickets_expected': total_expected,
+                    'base_url': self.base_url,
+                    'field_names': field_names or {}
+                },
+                'tickets': tickets
+            }
+
+            with open(output_file, 'w', encoding='utf-8') as f:
+                json.dump(export_data, f, indent=2, ensure_ascii=False)
+
+            print(f"\nExport complete!")
+            print(f"Saved {len(tickets)} tickets to {output_file}")
+            if total_expected:
+                print(f"Expected {total_expected} tickets")
+
+        except Exception as e:
+            print(f"Error saving results: {e}")
+            # Try to save without pretty printing as fallback
+            try:
+                with open(f"backup_{output_file}", 'w', encoding='utf-8') as f:
+                    json.dump(tickets, f)
+                print(f"Saved backup to backup_{output_file}")
+            except Exception as backup_error:
+                print(f"Failed to save backup: {backup_error}")
+
+def get_api_token() -> str:
+    """Read API token from ~/.atlassian-mcp-token file."""
+    token_file = Path.home() / '.atlassian-mcp-token'
+    try:
+        return token_file.read_text().strip()
+    except FileNotFoundError:
+        print(f"Error: Token file not found at {token_file}")
+        print("Please create the file with your Atlassian API token")
+        sys.exit(1)
+    except Exception as e:
+        print(f"Error reading token file: {e}")
+        sys.exit(1)
+
+def get_default_email() -> str:
+    """Get default email from TOKEN_ACCOUNT environment variable or current user."""
+    token_account = os.environ.get('TOKEN_ACCOUNT')
+    if token_account:
+        if '@' in token_account:
+            return token_account
+        else:
+            return f"{token_account}@indeed.com"
+
+    # Fall back to LDAPUSER or current user
+    ldap_user = os.environ.get('LDAPUSER')
+    if ldap_user:
+        return f"{ldap_user}@indeed.com"
+
+    # Final fallback to current user
+    import getpass
+    return f"{getpass.getuser()}@indeed.com"
+
+def show_ai_help():
+    """Display comprehensive help for AI usage."""
+    help_text = """
+JIRA EXPORT TOOL - AI ASSISTANT GUIDE
+=====================================
+
+PURPOSE:
+This tool exports Jira tickets with full history and custom field data to JSON format for analysis.
+
+REQUIRED SETUP:
+1. Create ~/.atlassian-mcp-token file containing your Jira API token
+2. Generate API token at: https://id.atlassian.com/manage-profile/security/api-tokens
+
+COMMAND STRUCTURE:
+python3 jira_export.py --jql "JQL_QUERY" --email "user@domain.com" [OPTIONS]
+
+REQUIRED PARAMETERS:
+--jql     : JQL (Jira Query Language) query to filter tickets
+--email   : User's Jira email address for authentication
+
+OPTIONAL PARAMETERS:
+--token            : API token (overrides ~/.atlassian-mcp-token file)
+--output           : Output filename (default: jira_export.json)
+--base-url         : Jira instance URL (default: https://indeed.atlassian.net)
+--include-metadata : Include UI metadata (significantly increases file size)
+
+COMMON JQL EXAMPLES:
+1. All tickets in project: project = "PROJECTKEY"
+2. Tickets assigned to user: assignee = "user@domain.com"
+3. Recent tickets: created >= -30d
+4. Specific ticket types: type in (Bug, Task, Story)
+5. Multiple projects: project in (PROJ1, PROJ2)
+6. Complex query: project = "CIPLAT" AND status != "Done" AND assignee = "tron@indeed.com"
+
+OUTPUT FORMAT:
+Creates JSON file with structure:
+{
+  "metadata": {
+    "export_timestamp": "2024-01-01 12:00:00 UTC",
+    "total_tickets_fetched": 150,
+    "field_names": {...}
+  },
+  "tickets": [...]
+}
+
+Each ticket includes:
+- All standard fields (summary, description, status, etc.)
+- Custom fields with readable names
+- Complete change history
+- Comments and attachments
+- Field schemas and metadata
+
+TYPICAL AI USE CASES:
+1. Analyze sprint progress: --jql "project = MYPROJ AND sprint in openSprints()"
+2. Bug analysis: --jql "project = MYPROJ AND type = Bug AND status != Closed"
+3. Team workload: --jql "assignee in (user1@domain.com, user2@domain.com) AND status != Done"
+4. Historical analysis: --jql "project = MYPROJ AND created >= 2024-01-01"
+
+ERROR HANDLING:
+- Automatic retry for rate limits and server errors
+- Graceful handling of large datasets with pagination
+- Partial export saving if interrupted
+
+AUTHENTICATION:
+Uses HTTP Basic Auth with email + API token (not password)
+Token file format: Single line containing the API token string
+
+PERFORMANCE:
+- Fetches 100 tickets per API call
+- Built-in rate limiting (0.5s between requests)
+- Memory efficient for large exports
+- Progress indicators during export
+
+SECURITY:
+- Token stored in home directory file
+- HTTPS communication only
+- No credential logging or caching
+"""
+    print(help_text)
+
+def main():
+    parser = argparse.ArgumentParser(description='Export Jira tickets with full history and custom fields')
+    parser.add_argument('--help-ai', action='store_true', help='Show AI-friendly help and examples')
+    parser.add_argument('--jql', help='JQL query to filter tickets (required unless --help-ai)')
+    parser.add_argument('--email', help='Your Jira email address (default: TOKEN_ACCOUNT or current user @indeed.com)')
+    parser.add_argument('--token', help='Your Jira API token (default: read from ~/.atlassian-mcp-token)')
+    parser.add_argument('--output', default='jira_export.json', help='Output file name')
+    parser.add_argument('--base-url', default='https://indeed.atlassian.net', help='Jira base URL')
+    parser.add_argument('--include-metadata', action='store_true',
+                        help='Include UI metadata (operations, editmeta, transitions, renderedFields) - increases file size significantly')
+
+    args = parser.parse_args()
+
+    # Show AI help if requested
+    if args.help_ai:
+        show_ai_help()
+        return
+
+    # Validate required arguments
+    if not args.jql:
+        parser.error("--jql is required")
+
+    # Get email with default fallback
+    email = args.email or get_default_email()
+
+    # Get token from file if not provided
+    api_token = args.token or get_api_token()
+
+    print("Jira Ticket Exporter")
+    print("===================")
+    print(f"JQL Query: {args.jql}")
+    print(f"Email: {email}")
+    print(f"Output file: {args.output}")
+    print(f"Base URL: {args.base_url}")
+    print()
+
+    exporter = JiraExporter(args.base_url, email, api_token, args.include_metadata)
+    exporter.export_tickets(args.jql, args.output)
+
+if __name__ == "__main__":
+    main()
