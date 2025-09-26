@@ -9,6 +9,7 @@ This repo contains tools I have built to enable me to use AI more easily in my d
 - **confluence-api** - Bash wrapper for Confluence REST API with cross-platform authentication (includes comprehensive usage docs in script)
 - **calendar-link** - Generates Google Calendar event URLs from command line parameters with optional browser integration
 - **gitlab-api** - Bash wrapper for GitLab REST API with keychain authentication
+- **ciplat-dashboard** - CIPLAT team dashboard showing current sprint status and top backlog items
 
 ## API Usage Notes
 
