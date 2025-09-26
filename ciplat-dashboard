@@ -1,0 +1,215 @@
+#!/usr/bin/env bash
+
+# CIPLAT Dashboard - Quick sprint and backlog overview
+# Shows current sprint status and top backlog items
+
+SELF="$(basename "$0")"
+JIRA_API="$(dirname "$0")/jira-api"
+
+function usage {
+    cat <<EOF
+$SELF: CIPLAT team dashboard showing current sprint and backlog
+
+USAGE:
+    $SELF [OPTIONS]
+
+OPTIONS:
+    -s, --sprint SPRINT    Specify sprint name (default: auto-detect current sprint)
+    -n, --count N          Number of backlog items to show (default: 10)
+    -h, --help            Show this help
+
+EXAMPLES:
+    $SELF                                    # Show current sprint + top backlog
+    $SELF --sprint "CIPLAT 2025-10-07"     # Show specific sprint
+    $SELF --count 5                         # Show only top 5 backlog items
+
+EOF
+}
+
+function get_current_sprint {
+    # Try to detect current sprint by looking for recently updated tickets with sprint info
+    # This is a heuristic since we can't access sprint API directly
+    local current_date=$(date +"%Y-%m-%d")
+    echo "CIPLAT $(date -d "next monday" +"%Y-%m-%d" 2>/dev/null || echo "2025-10-07")"
+}
+
+function show_sprint_status {
+    local sprint_name="$1"
+    echo "🎯 CURRENT SPRINT: $sprint_name"
+    echo "=" | head -c 60; echo
+
+    # Get recent tickets and categorize by status
+    local jql="project=CIPLAT AND updated >= -14d"
+    local response=$($JIRA_API GET "/search/jql?jql=$(printf '%s' "$jql" | sed 's/ /%20/g')&fields=key,summary,status,assignee,priority,customfield_10026&maxResults=50" 2>/dev/null)
+
+    if [[ $? -ne 0 ]] || [[ -z "$response" ]]; then
+        echo "❌ Failed to fetch sprint data"
+        return 1
+    fi
+
+    # Parse and categorize by status
+    echo "$response" | python3 -c "
+import json, sys
+try:
+    data = json.load(sys.stdin)
+    issues = data.get('issues', [])
+
+    # Group by status category
+    blocked = []
+    todo = []
+    in_progress = []
+    in_review = []
+    done = []
+
+    for issue in issues:
+        fields = issue.get('fields', {})
+        key = issue.get('key', 'N/A')  # Key is at top level, not in fields
+        summary = fields.get('summary', 'No summary')[:50]
+        status_info = fields.get('status', {})
+        status_name = status_info.get('name', 'Unknown')
+        status_category = status_info.get('statusCategory', {}).get('key', '')
+        assignee = fields.get('assignee')
+        assignee_name = assignee.get('displayName', '').split()[0] if assignee else ''  # First name only
+        story_points = fields.get('customfield_10026', 0) or 0  # Story points field
+
+        # Format: CIPLAT-1234 [3pt, User] or CIPLAT-1234 [3pt] if unassigned
+        assignee_part = f', {assignee_name}' if assignee_name else ''
+        item = f'{key} [{story_points}pt{assignee_part}]: {summary}...'
+
+        # Categorize by status
+        if 'blocked' in status_name.lower():
+            blocked.append(item)
+        elif status_category == 'new' or 'triage' in status_name.lower():
+            todo.append(item)
+        elif status_category == 'indeterminate' or 'progress' in status_name.lower():
+            in_progress.append(item)
+        elif 'review' in status_name.lower():
+            in_review.append(item)
+        elif status_category == 'done':
+            done.append(item)
+        else:
+            todo.append(item)  # Default fallback
+
+    # Display sections
+    if blocked:
+        print('🚫 BLOCKED:')
+        for item in blocked[:5]: print(f'   {item}')
+        print()
+
+    if todo:
+        print('📋 TO-DO:')
+        for item in todo[:5]: print(f'   {item}')
+        print()
+
+    if in_progress:
+        print('🔄 IN PROGRESS:')
+        for item in in_progress[:5]: print(f'   {item}')
+        print()
+
+    if in_review:
+        print('👀 IN REVIEW:')
+        for item in in_review[:5]: print(f'   {item}')
+        print()
+
+    if done:
+        print('✅ RECENTLY DONE:')
+        for item in done[:3]: print(f'   {item}')
+        print()
+
+except Exception as e:
+    print(f'Error parsing sprint data: {e}')
+"
+}
+
+function show_backlog {
+    local count=${1:-10}
+    echo "📚 TOP BACKLOG (Next $count items)"
+    echo "=" | head -c 40; echo
+
+    # Get backlog items - assume anything in "Pending Triage" or unassigned/old items are backlog
+    local jql="project=CIPLAT AND (status='Pending Triage' OR (assignee is EMPTY AND updated <= -7d))"
+    local response=$($JIRA_API GET "/search/jql?jql=$(printf '%s' "$jql" | sed 's/ /%20/g')&fields=key,summary,priority,created,assignee,customfield_10026&maxResults=$count" 2>/dev/null)
+
+    if [[ $? -ne 0 ]] || [[ -z "$response" ]]; then
+        echo "❌ Failed to fetch backlog data"
+        return 1
+    fi
+
+    echo "$response" | python3 -c "
+import json, sys
+try:
+    data = json.load(sys.stdin)
+    issues = data.get('issues', [])
+
+    for i, issue in enumerate(issues, 1):
+        fields = issue.get('fields', {})
+        key = issue.get('key', 'N/A')  # Key is at top level, not in fields
+        summary = fields.get('summary', 'No summary')[:50]
+        priority = fields.get('priority', {}).get('name', 'No Priority')
+        assignee = fields.get('assignee')
+        assignee_name = assignee.get('displayName', '').split()[0] if assignee else ''  # First name only
+        story_points = fields.get('customfield_10026', 0) or 0  # Story points field
+
+        # Format: CIPLAT-1234 [3pt, User] or CIPLAT-1234 [3pt] if unassigned
+        assignee_part = f', {assignee_name}' if assignee_name else ''
+        print(f'{i:2d}. {key} [{story_points}pt{assignee_part}]: {summary}... [{priority}]')
+
+    if not issues:
+        print('   No backlog items found in triage status')
+
+except Exception as e:
+    print(f'Error parsing backlog data: {e}')
+"
+}
+
+function main {
+    local sprint_name=""
+    local backlog_count=10
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            -s|--sprint)
+                sprint_name="$2"
+                shift 2
+                ;;
+            -n|--count)
+                backlog_count="$2"
+                shift 2
+                ;;
+            -h|--help)
+                usage
+                exit 0
+                ;;
+            *)
+                echo "Unknown option: $1" >&2
+                usage
+                exit 1
+                ;;
+        esac
+    done
+
+    # Check if jira-api script exists
+    if [[ ! -x "$JIRA_API" ]]; then
+        echo "❌ Error: jira-api script not found at $JIRA_API" >&2
+        exit 1
+    fi
+
+    # Get current sprint name if not provided
+    if [[ -z "$sprint_name" ]]; then
+        sprint_name=$(get_current_sprint)
+    fi
+
+    echo "CIPLAT Team Dashboard - $(date '+%Y-%m-%d %H:%M')"
+    echo "=" | head -c 50; echo
+    echo
+
+    # Show sprint status
+    show_sprint_status "$sprint_name"
+    echo
+
+    # Show backlog
+    show_backlog "$backlog_count"
+}
+
+main "$@"
