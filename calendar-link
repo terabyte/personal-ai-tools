@@ -2,8 +2,8 @@
 
 # Uses instructions from https://www.formsite.com/blog/google-calendar-links/
 
-SELF="$0"
-CALENDAR_PREFIX=https://www.google.com/calendar/render
+SELF="$(basename "$0")"
+CALENDAR_PREFIX="https://www.google.com/calendar/render"
 
 function usage {
     cat <<END
@@ -11,7 +11,7 @@ ${SELF}: Generate a URL that creates a Google Calendar event.
 
 USAGE
 
-    ${SELF} -t TITLE -d DATES [-l LOCATION] [-D DESCRIPTION] [-tz TIMEZONE]
+    ${SELF} -t TITLE -d DATES [-l LOCATION] [-D DESCRIPTION] [-z TIMEZONE] [-o]
 
 ARGUMENTS
 
@@ -26,51 +26,113 @@ ARGUMENTS
             YYYYMMDDTHHMMSS/YYYYMMDDTHHMMSS
 
         For all-day events, specify the day of the event and the day *after*
-        the event. For events with timestamps, note the literal \`T\`.
+        the event. For events with timestamps, note the literal 'T'.
     -l LOCATION
-        Opional string that will be copied directly into the "Location" field
+        Optional string that will be copied directly into the "Location" field
         of the event.
     -D DESCRIPTION
         Optional string that will be copied directly into the "Description"
         field of the event.
     -z TIMEZONE
         Optional timezone of the event. (Google Calendar uses the user's local
-        TZ by default.) Can be anything in the \`tz\` database:
+        TZ by default.) Can be anything in the 'tz' database:
         https://en.wikipedia.org/wiki/List_of_tz_database_time_zones
+    -o
+        Open the generated URL in Google Chrome browser after prompting.
+
+EXAMPLES
+
+    # Create event for today 2-3pm
+    ${SELF} -t "Team Meeting" -d "20250926T140000/20250926T150000"
+
+    # Create event with all details and open in browser
+    ${SELF} -t "Project Review" -d "20250927T100000/20250927T110000" \\
+            -l "Conference Room A" -D "Quarterly project review meeting" -o
+
 END
 }
 
 function generate {
-    local OPT OPTIND OPTARG
-    declare -A params
+    local title="" dates="" location="" description="" timezone="" open_browser=false
+    local OPTIND OPTARG
 
-    params[action]='TEMPLATE'
-
-    while getopts t:d:l:D:z: OPT ; do
-        case "$OPT" in
-            t) params[title]="$OPTARG" ;;
-            d) params[dates]="$OPTARG" ;;
-            l) params[location]="$OPTARG" ;;
-            D) params[description]="$OPTARG" ;;
-            z) params[ctz]="$OPTARG" ;;
+    while getopts "t:d:l:D:z:oh" opt; do
+        case "$opt" in
+            t) title="$OPTARG" ;;
+            d) dates="$OPTARG" ;;
+            l) location="$OPTARG" ;;
+            D) description="$OPTARG" ;;
+            z) timezone="$OPTARG" ;;
+            o) open_browser=true ;;
+            h) usage; return 0 ;;
+            *) usage; return 1 ;;
         esac
     done
 
-    [[ "${params[title]-x}" == x ]] && \
-        usage && echo -e "\n-t TITLE is required" && \
+    # Validate required parameters
+    if [[ -z "$title" ]]; then
+        echo "Error: -t TITLE is required" >&2
+        usage
         return 1
-    [[ "${params[dates]-x}" == x ]] && \
-        usage && echo -e "\n-d DATES is required" && \
+    fi
+
+    if [[ -z "$dates" ]]; then
+        echo "Error: -d DATES is required" >&2
+        usage
         return 1
+    fi
 
-    declare -a query
-    for OPT in "${!params[@]}" ; do
-        query+=("${OPT}=${params[${OPT}]}")
-    done
+    # Build query parameters
+    local -a query_params
+    query_params+=("action=TEMPLATE")
+    query_params+=("text=$(printf '%s' "$title" | sed 's/ /%20/g')")
+    query_params+=("dates=$dates")
 
-    local IFS='&'
-    echo "${CALENDAR_PREFIX}?${query[*]}"
+    if [[ -n "$location" ]]; then
+        query_params+=("location=$(printf '%s' "$location" | sed 's/ /%20/g')")
+    fi
+
+    if [[ -n "$description" ]]; then
+        query_params+=("details=$(printf '%s' "$description" | sed 's/ /%20/g')")
+    fi
+
+    if [[ -n "$timezone" ]]; then
+        query_params+=("ctz=$timezone")
+    fi
+
+    # Join parameters with &
+    local query_string
+    query_string=$(IFS='&'; echo "${query_params[*]}")
+
+    # Generate final URL
+    local url="${CALENDAR_PREFIX}?${query_string}"
+
+    # Output URL
+    echo "$url"
+
+    # Optionally open in browser
+    if [[ "$open_browser" == true ]]; then
+        echo "" >&2
+        echo "Generated calendar event URL. Open in browser? (y/N): " >&2
+        read -r response
+        if [[ "$response" =~ ^[Yy]$ ]]; then
+            if command -v google-chrome >/dev/null 2>&1; then
+                echo "Opening in Google Chrome..." >&2
+                google-chrome "$url" 2>/dev/null &
+            else
+                echo "Google Chrome not found. Please copy the URL above and paste it in your browser." >&2
+            fi
+        fi
+    fi
+
+    return 0
 }
 
-generate $@
+# Handle help flag
+if [[ "$1" == "-h" || "$1" == "--help" ]]; then
+    usage
+    exit 0
+fi
 
+# Call main function
+generate "$@"
