@@ -35,7 +35,7 @@ function get_current_sprint {
 
 function show_sprint_status {
     local sprint_name="$1"
-    echo "🎯 CURRENT SPRINT: $sprint_name"
+    echo ">> CURRENT SPRINT: $sprint_name"
     echo "=" | head -c 60; echo
 
     # Get recent tickets and categorize by status
@@ -106,27 +106,27 @@ try:
 
     # Display sections
     if blocked:
-        print('🚫 BLOCKED:')
+        print('BLOCKED:')
         for item in blocked[:5]: print(f'   {item}')
         print()
 
     if todo:
-        print('📋 TO-DO:')
+        print('TO-DO:')
         for item in todo[:5]: print(f'   {item}')
         print()
 
     if in_progress:
-        print('🔄 IN PROGRESS:')
+        print('IN PROGRESS:')
         for item in in_progress[:5]: print(f'   {item}')
         print()
 
     if in_review:
-        print('👀 IN REVIEW:')
+        print('IN REVIEW:')
         for item in in_review[:5]: print(f'   {item}')
         print()
 
     if done:
-        print('✅ RECENTLY DONE:')
+        print('RECENTLY DONE:')
         for item in done[:3]: print(f'   {item}')
         print()
 
@@ -137,9 +137,9 @@ except Exception as e:
 
 function show_backlog {
     local count=${1:-10}
-    echo "📚 TOP BACKLOG (Next $count items)"
+    echo ">> TOP BACKLOG (Next $count items)"
     echo "=" | head -c 40; echo
-    echo "🟢 on Backlog  🟡 Pending Triage  🔴 Blocked"
+    echo -e "\033[32m[B]\033[0m on Backlog  \033[33m[T]\033[0m Pending Triage  \033[31m[X]\033[0m Blocked"
     echo
 
     # Get backlog items - include all backlog-related statuses
@@ -212,19 +212,19 @@ try:
         else:
             story_points_str = str(story_points)
 
-        # Add status color indicator
+        # Add status indicator with ANSI colors (xterm compatible)
         if status_name == 'on Backlog':
-            status_color = '🟢'
+            status_indicator = '\x1b[32m[B]\x1b[0m'  # Green
         elif status_name == 'Pending Triage':
-            status_color = '🟡'
+            status_indicator = '\x1b[33m[T]\x1b[0m'  # Yellow
         elif 'Blocked' in status_name or status_name == 'Blocked':
-            status_color = '🔴'
+            status_indicator = '\x1b[31m[X]\x1b[0m'  # Red
         else:
-            status_color = '⚪'  # Unknown status
+            status_indicator = '[?]'  # Unknown status
 
         # Format: CIPLAT-1234 [3pt, User] or CIPLAT-1234 [3pt] if unassigned
         assignee_part = f', {assignee_name}' if assignee_name else ''
-        print(f'{i:2d}. {status_color} {key} [{story_points_str}pt{assignee_part}]: {summary}... [{priority}]')
+        print(f'{i:2d}. {status_indicator} {key} [{story_points_str}pt{assignee_part}]: {summary}... [{priority}]')
 
     if not limited_issues:
         print('   No backlog items found in triage status')
