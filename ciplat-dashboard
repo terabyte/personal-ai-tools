@@ -40,7 +40,7 @@ function show_sprint_status {
 
     # Get recent tickets and categorize by status
     local jql="project=CIPLAT AND updated >= -14d"
-    local response=$($JIRA_API GET "/search/jql?jql=$(printf '%s' "$jql" | sed 's/ /%20/g')&fields=key,summary,status,assignee,priority,customfield_10026&maxResults=50" 2>/dev/null)
+    local response=$($JIRA_API GET "/search/jql?jql=$(printf '%s' "$jql" | sed 's/ /%20/g')&fields=key,summary,status,assignee,priority,customfield_10061&maxResults=50" 2>/dev/null)
 
     if [[ $? -ne 0 ]] || [[ -z "$response" ]]; then
         echo "❌ Failed to fetch sprint data"
@@ -69,12 +69,26 @@ try:
         status_name = status_info.get('name', 'Unknown')
         status_category = status_info.get('statusCategory', {}).get('key', '')
         assignee = fields.get('assignee')
-        assignee_name = assignee.get('displayName', '').split()[0] if assignee else ''  # First name only
-        story_points = fields.get('customfield_10026', 0) or 0  # Story points field
+        # Try to get username first, fallback to display name
+        if assignee:
+            assignee_email = assignee.get('emailAddress', '')
+            if assignee_email and '@' in assignee_email:
+                assignee_name = assignee_email.split('@')[0]  # LDAP username
+            else:
+                assignee_name = assignee.get('displayName', '')
+        else:
+            assignee_name = ''
+
+        story_points = fields.get('customfield_10061', 0) or 0  # Story points field
+        # Format story points as integer if whole number, otherwise float
+        if isinstance(story_points, (int, float)) and story_points == int(story_points):
+            story_points_str = str(int(story_points))
+        else:
+            story_points_str = str(story_points)
 
         # Format: CIPLAT-1234 [3pt, User] or CIPLAT-1234 [3pt] if unassigned
         assignee_part = f', {assignee_name}' if assignee_name else ''
-        item = f'{key} [{story_points}pt{assignee_part}]: {summary}...'
+        item = f'{key} [{story_points_str}pt{assignee_part}]: {summary}...'
 
         # Categorize by status
         if 'blocked' in status_name.lower():
@@ -128,7 +142,7 @@ function show_backlog {
 
     # Get backlog items - assume anything in "Pending Triage" or unassigned/old items are backlog
     local jql="project=CIPLAT AND (status='Pending Triage' OR (assignee is EMPTY AND updated <= -7d))"
-    local response=$($JIRA_API GET "/search/jql?jql=$(printf '%s' "$jql" | sed 's/ /%20/g')&fields=key,summary,priority,created,assignee,customfield_10026&maxResults=$count" 2>/dev/null)
+    local response=$($JIRA_API GET "/search/jql?jql=$(printf '%s' "$jql" | sed 's/ /%20/g')&fields=key,summary,priority,created,assignee,customfield_10061&maxResults=$count" 2>/dev/null)
 
     if [[ $? -ne 0 ]] || [[ -z "$response" ]]; then
         echo "❌ Failed to fetch backlog data"
@@ -147,12 +161,26 @@ try:
         summary = fields.get('summary', 'No summary')[:50]
         priority = fields.get('priority', {}).get('name', 'No Priority')
         assignee = fields.get('assignee')
-        assignee_name = assignee.get('displayName', '').split()[0] if assignee else ''  # First name only
-        story_points = fields.get('customfield_10026', 0) or 0  # Story points field
+        # Try to get username first, fallback to display name
+        if assignee:
+            assignee_email = assignee.get('emailAddress', '')
+            if assignee_email and '@' in assignee_email:
+                assignee_name = assignee_email.split('@')[0]  # LDAP username
+            else:
+                assignee_name = assignee.get('displayName', '')
+        else:
+            assignee_name = ''
+
+        story_points = fields.get('customfield_10061', 0) or 0  # Story points field
+        # Format story points as integer if whole number, otherwise float
+        if isinstance(story_points, (int, float)) and story_points == int(story_points):
+            story_points_str = str(int(story_points))
+        else:
+            story_points_str = str(story_points)
 
         # Format: CIPLAT-1234 [3pt, User] or CIPLAT-1234 [3pt] if unassigned
         assignee_part = f', {assignee_name}' if assignee_name else ''
-        print(f'{i:2d}. {key} [{story_points}pt{assignee_part}]: {summary}... [{priority}]')
+        print(f'{i:2d}. {key} [{story_points_str}pt{assignee_part}]: {summary}... [{priority}]')
 
     if not issues:
         print('   No backlog items found in triage status')
