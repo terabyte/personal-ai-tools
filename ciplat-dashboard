@@ -140,9 +140,9 @@ function show_backlog {
     echo "📚 TOP BACKLOG (Next $count items)"
     echo "=" | head -c 40; echo
 
-    # Get backlog items - use "Pending Triage" status and try to get them in rank order
-    # First try to get with rank field for proper ordering
-    local jql="project=CIPLAT AND status='Pending Triage'"
+    # Get backlog items - include both "Pending Triage" and "on Backlog" statuses
+    # Get them in rank order using the rank field
+    local jql="project=CIPLAT AND (status='Pending Triage' OR status='on Backlog')"
     local response=$($JIRA_API GET "/search/jql?jql=$(printf '%s' "$jql" | sed 's/ /%20/g')&fields=key,summary,priority,created,assignee,customfield_10061,customfield_10022&maxResults=100" 2>/dev/null)
 
     if [[ $? -ne 0 ]] || [[ -z "$response" ]]; then
@@ -157,16 +157,27 @@ try:
     issues = data.get('issues', [])
 
     # Sort issues by rank field (customfield_10022) to get proper backlog order
-    # Jira rank format is like '0|iqn75b:' where the part after | is the actual rank
+    # Jira rank format is like '0|hzzwg1:2' or '0|i003pj:00ibi06020909'
+    # The part after | contains prefix:suffix - we need to sort by prefix then suffix
     def get_rank_sort_key(issue):
         fields = issue.get('fields', {})
         rank = fields.get('customfield_10022', '')
-        if rank and '|' in rank:
-            # Extract the rank part after the pipe
-            rank_part = rank.split('|')[1].rstrip(':')
-            return rank_part
+        if rank and '|' in rank and ':' in rank:
+            # Extract the rank part after the pipe: 'hzzwg1:2'
+            rank_part = rank.split('|')[1]
+            if ':' in rank_part:
+                prefix, suffix = rank_part.split(':', 1)
+                # Create a sort key that sorts by prefix first, then suffix
+                # Pad numeric suffixes for proper ordering
+                if suffix.rstrip(':').isdigit():
+                    padded_suffix = suffix.rstrip(':').zfill(10)
+                else:
+                    padded_suffix = suffix.rstrip(':')
+                return (prefix, padded_suffix)
         # Fallback to issue key for consistent ordering
-        return issue.get('key', 'ZZZZ-9999')
+        issue_key = issue.get('key', 'ZZZZ-9999')
+        issue_num = issue_key.split('-')[-1] if '-' in issue_key else '9999'
+        return ('zzz_fallback', issue_num.zfill(10))
 
     # Sort issues by rank
     issues_sorted = sorted(issues, key=get_rank_sort_key)
