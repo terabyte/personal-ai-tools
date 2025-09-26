@@ -140,9 +140,10 @@ function show_backlog {
     echo "📚 TOP BACKLOG (Next $count items)"
     echo "=" | head -c 40; echo
 
-    # Get backlog items - assume anything in "Pending Triage" or unassigned/old items are backlog
-    local jql="project=CIPLAT AND (status='Pending Triage' OR (assignee is EMPTY AND updated <= -7d))"
-    local response=$($JIRA_API GET "/search/jql?jql=$(printf '%s' "$jql" | sed 's/ /%20/g')&fields=key,summary,priority,created,assignee,customfield_10061&maxResults=$count" 2>/dev/null)
+    # Get backlog items - use "Pending Triage" status and try to get them in rank order
+    # First try to get with rank field for proper ordering
+    local jql="project=CIPLAT AND status='Pending Triage'"
+    local response=$($JIRA_API GET "/search/jql?jql=$(printf '%s' "$jql" | sed 's/ /%20/g')&fields=key,summary,priority,created,assignee,customfield_10061,customfield_10022&maxResults=100" 2>/dev/null)
 
     if [[ $? -ne 0 ]] || [[ -z "$response" ]]; then
         echo "❌ Failed to fetch backlog data"
@@ -155,7 +156,26 @@ try:
     data = json.load(sys.stdin)
     issues = data.get('issues', [])
 
-    for i, issue in enumerate(issues, 1):
+    # Sort issues by rank field (customfield_10022) to get proper backlog order
+    # Jira rank format is like '0|iqn75b:' where the part after | is the actual rank
+    def get_rank_sort_key(issue):
+        fields = issue.get('fields', {})
+        rank = fields.get('customfield_10022', '')
+        if rank and '|' in rank:
+            # Extract the rank part after the pipe
+            rank_part = rank.split('|')[1].rstrip(':')
+            return rank_part
+        # Fallback to issue key for consistent ordering
+        return issue.get('key', 'ZZZZ-9999')
+
+    # Sort issues by rank
+    issues_sorted = sorted(issues, key=get_rank_sort_key)
+
+    # Limit to requested count
+    count = $count
+    limited_issues = issues_sorted[:count]
+
+    for i, issue in enumerate(limited_issues, 1):
         fields = issue.get('fields', {})
         key = issue.get('key', 'N/A')  # Key is at top level, not in fields
         summary = fields.get('summary', 'No summary')[:50]
@@ -182,8 +202,10 @@ try:
         assignee_part = f', {assignee_name}' if assignee_name else ''
         print(f'{i:2d}. {key} [{story_points_str}pt{assignee_part}]: {summary}... [{priority}]')
 
-    if not issues:
+    if not limited_issues:
         print('   No backlog items found in triage status')
+    elif len(issues_sorted) > count:
+        print(f'   ... and {len(issues_sorted) - count} more items in backlog')
 
 except Exception as e:
     print(f'Error parsing backlog data: {e}')
