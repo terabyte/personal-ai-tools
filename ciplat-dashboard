@@ -139,11 +139,13 @@ function show_backlog {
     local count=${1:-10}
     echo "📚 TOP BACKLOG (Next $count items)"
     echo "=" | head -c 40; echo
+    echo "🟢 on Backlog  🟡 Pending Triage  🔴 Blocked"
+    echo
 
-    # Get backlog items - include both "Pending Triage" and "on Backlog" statuses
+    # Get backlog items - include all backlog-related statuses
     # Get them in rank order using the rank field
-    local jql="project=CIPLAT AND (status='Pending Triage' OR status='on Backlog')"
-    local response=$($JIRA_API GET "/search/jql?jql=$(printf '%s' "$jql" | sed 's/ /%20/g')&fields=key,summary,priority,created,assignee,customfield_10061,customfield_10022&maxResults=100" 2>/dev/null)
+    local jql="project=CIPLAT AND (status='Pending Triage' OR status='on Backlog' OR status='Blocked')"
+    local response=$($JIRA_API GET "/search/jql?jql=$(printf '%s' "$jql" | sed 's/ /%20/g')&fields=key,summary,priority,created,assignee,customfield_10061,customfield_10022,status&maxResults=100" 2>/dev/null)
 
     if [[ $? -ne 0 ]] || [[ -z "$response" ]]; then
         echo "❌ Failed to fetch backlog data"
@@ -191,6 +193,7 @@ try:
         key = issue.get('key', 'N/A')  # Key is at top level, not in fields
         summary = fields.get('summary', 'No summary')[:50]
         priority = fields.get('priority', {}).get('name', 'No Priority')
+        status_name = fields.get('status', {}).get('name', 'Unknown')
         assignee = fields.get('assignee')
         # Try to get username first, fallback to display name
         if assignee:
@@ -209,9 +212,19 @@ try:
         else:
             story_points_str = str(story_points)
 
+        # Add status color indicator
+        if status_name == 'on Backlog':
+            status_color = '🟢'
+        elif status_name == 'Pending Triage':
+            status_color = '🟡'
+        elif 'Blocked' in status_name or status_name == 'Blocked':
+            status_color = '🔴'
+        else:
+            status_color = '⚪'  # Unknown status
+
         # Format: CIPLAT-1234 [3pt, User] or CIPLAT-1234 [3pt] if unassigned
         assignee_part = f', {assignee_name}' if assignee_name else ''
-        print(f'{i:2d}. {key} [{story_points_str}pt{assignee_part}]: {summary}... [{priority}]')
+        print(f'{i:2d}. {status_color} {key} [{story_points_str}pt{assignee_part}]: {summary}... [{priority}]')
 
     if not limited_issues:
         print('   No backlog items found in triage status')
