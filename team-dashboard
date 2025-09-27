@@ -98,7 +98,14 @@ function show_sprint_status {
     local sprint_name="$1"
     local summary_length="$2"
     local sprint_jql="$3"
-    echo ">> CURRENT SPRINT: $sprint_name"
+
+    # Extract sprint name from JQL if it contains sprint = "name"
+    if [[ "$sprint_jql" =~ sprint\ =\ \"([^\"]+)\" ]]; then
+        local actual_sprint="${BASH_REMATCH[1]}"
+        echo ">> CURRENT SPRINT: $actual_sprint"
+    else
+        echo ">> CURRENT SPRINT: $sprint_name"
+    fi
     echo "=" | head -c 60; echo
 
     # Get recent tickets and categorize by status using team JQL

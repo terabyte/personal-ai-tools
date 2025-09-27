@@ -9,7 +9,7 @@ This repo contains tools I have built to enable me to use AI more easily in my d
 - **confluence-api** - Bash wrapper for Confluence REST API with cross-platform authentication (includes comprehensive usage docs in script)
 - **calendar-link** - Generates Google Calendar event URLs from command line parameters with optional browser integration
 - **gitlab-api** - Bash wrapper for GitLab REST API with keychain authentication
-- **ciplat-dashboard** - CIPLAT team dashboard showing current sprint status and top backlog items
+- **team-dashboard** - Configurable team dashboard showing current sprint status and backlog items (supports multiple teams via config file)
 
 ## API Usage Notes
 
@@ -51,4 +51,40 @@ calendar-link -t "Project Review" -d "20250927T100000/20250927T110000" \
 
 # All-day event
 calendar-link -t "Conference" -d "20250928/20250929" -l "Austin, TX"
+```
+
+### Team Dashboard (`team-dashboard`)
+- **Multi-team support**: Configure teams in `team-dashboard.conf` with custom JQL queries
+- **Status tracking**: Shows sprint work categorized by status (TO-DO, IN PROGRESS, IN REVIEW, DONE)
+- **Backlog view**: Ranked backlog items with status indicators ([B]acklog, [T]riage, Bloc[X]ed)
+- **Activity tracking**: Shows days since last update with color coding (green < 2d, yellow 2-4d)
+- **Auto-sizing**: Adapts summary length to terminal width automatically
+- **Color support**: ANSI colors for xterm with `--color` flag
+
+**Examples:**
+```bash
+# Default CIPLAT dashboard
+team-dashboard
+
+# CDPLAT team dashboard
+team-dashboard cdplat
+
+# Support team dashboards
+team-dashboard ciplat-support
+team-dashboard cdplat-support
+
+# With options
+team-dashboard cdplat --count 15 --color --length 100
+
+# List available teams
+team-dashboard --list-teams
+```
+
+**Configuration:**
+Edit `team-dashboard.conf` to add new teams:
+```ini
+[my-team]
+display_name = My Team Name
+sprint_jql = project IN (PROJ1,PROJ2) AND updated >= -14d
+backlog_jql = project IN (PROJ1,PROJ2) AND status IN ('Pending Triage','on Backlog','Blocked')
 ```
