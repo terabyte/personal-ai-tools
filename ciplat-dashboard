@@ -45,7 +45,7 @@ function show_sprint_status {
 
     # Get recent tickets and categorize by status
     local jql="project=CIPLAT AND updated >= -14d"
-    local response=$($JIRA_API GET "/search/jql?jql=$(printf '%s' "$jql" | sed 's/ /%20/g')&fields=key,summary,status,assignee,priority,customfield_10061&maxResults=50" 2>/dev/null)
+    local response=$($JIRA_API GET "/search/jql?jql=$(printf '%s' "$jql" | sed 's/ /%20/g')&fields=key,summary,status,assignee,priority,customfield_10061,updated&maxResults=50" 2>/dev/null)
 
     if [[ $? -ne 0 ]] || [[ -z "$response" ]]; then
         echo "❌ Failed to fetch sprint data"
@@ -53,11 +53,13 @@ function show_sprint_status {
     fi
 
     # Parse and categorize by status
-    echo "$response" | SUMMARY_LENGTH="$summary_length" python3 -c "
+    echo "$response" | SUMMARY_LENGTH="$summary_length" USE_COLORS="$use_colors" python3 -c "
 import json, sys, os
+from datetime import datetime, timezone
 try:
     data = json.load(sys.stdin)
     issues = data.get('issues', [])
+    use_colors = os.environ.get('USE_COLORS', 'false') == 'true'
 
     # Group by status category
     blocked = []
@@ -96,9 +98,45 @@ try:
         else:
             story_points_str = str(story_points)
 
-        # Format: CIPLAT-1234 [3pt, User] or CIPLAT-1234 [3pt] if unassigned
+        # Calculate days since last update
+        updated_str = fields.get('updated', '')
+        if updated_str:
+            try:
+                # Parse ISO format: 2025-09-26T14:10:21.467-0500
+                # Fix timezone format for Python compatibility
+                if updated_str.count(':') == 2 and ('+' in updated_str[-5:] or '-' in updated_str[-5:]):
+                    # Add colon to timezone: -0500 -> -05:00
+                    updated_str = updated_str[:-2] + ':' + updated_str[-2:]
+                updated_dt = datetime.fromisoformat(updated_str)
+                now = datetime.now(timezone.utc)
+                days_diff = (now - updated_dt).days
+
+                # Format days with color in sprint section too
+                if days_diff == 0:
+                    days_text = 'today'
+                elif days_diff == 1:
+                    days_text = '1d'
+                else:
+                    days_text = f'{days_diff}d'
+
+                # Apply color based on days and color settings
+                if use_colors:
+                    if days_diff < 2:
+                        days_part = f'\033[32m({days_text})\033[0m'  # Green < 2 days
+                    elif days_diff <= 4:
+                        days_part = f'\033[33m({days_text})\033[0m'  # Yellow 2-4 days
+                    else:
+                        days_part = f'({days_text})'  # Standard (no color) > 4 days
+                else:
+                    days_part = f'({days_text})'
+            except:
+                days_part = '(?d)'
+        else:
+            days_part = '(?d)'
+
+        # Format: CIPLAT-1234 (3d) [3pt, User] or CIPLAT-1234 (3d) [3pt] if unassigned
         assignee_part = f', {assignee_name}' if assignee_name else ''
-        item = f'{key} [{story_points_str}pt{assignee_part}]: {summary}{summary_suffix}'
+        item = f'{key} {days_part} [{story_points_str}pt{assignee_part}]: {summary}{summary_suffix}'
 
         # Categorize by status
         if 'blocked' in status_name.lower():
@@ -162,7 +200,7 @@ function show_backlog {
     # Get backlog items - include all backlog-related statuses
     # Get them in rank order using the rank field
     local jql="project=CIPLAT AND (status='Pending Triage' OR status='on Backlog' OR status='Blocked')"
-    local response=$($JIRA_API GET "/search/jql?jql=$(printf '%s' "$jql" | sed 's/ /%20/g')&fields=key,summary,priority,created,assignee,customfield_10061,customfield_10022,status&maxResults=100" 2>/dev/null)
+    local response=$($JIRA_API GET "/search/jql?jql=$(printf '%s' "$jql" | sed 's/ /%20/g')&fields=key,summary,priority,created,assignee,customfield_10061,customfield_10022,status,updated&maxResults=100" 2>/dev/null)
 
     if [[ $? -ne 0 ]] || [[ -z "$response" ]]; then
         echo "❌ Failed to fetch backlog data"
@@ -171,6 +209,7 @@ function show_backlog {
 
     echo "$response" | SUMMARY_LENGTH="$summary_length" USE_COLORS="$use_colors" python3 -c "
 import json, sys, os
+from datetime import datetime, timezone
 try:
     data = json.load(sys.stdin)
     issues = data.get('issues', [])
@@ -255,9 +294,45 @@ try:
             else:
                 status_indicator = '[?]'  # Unknown status
 
-        # Format: CIPLAT-1234 [3pt, User] or CIPLAT-1234 [3pt] if unassigned
+        # Calculate days since last update with colors
+        updated_str = fields.get('updated', '')
+        if updated_str:
+            try:
+                # Parse ISO format: 2025-09-26T14:10:21.467-0500
+                # Fix timezone format for Python compatibility
+                if updated_str.count(':') == 2 and ('+' in updated_str[-5:] or '-' in updated_str[-5:]):
+                    # Add colon to timezone: -0500 -> -05:00
+                    updated_str = updated_str[:-2] + ':' + updated_str[-2:]
+                updated_dt = datetime.fromisoformat(updated_str)
+                now = datetime.now(timezone.utc)
+                days_diff = (now - updated_dt).days
+
+                # Format days with color based on age
+                if days_diff == 0:
+                    days_text = 'today'
+                elif days_diff == 1:
+                    days_text = '1d'
+                else:
+                    days_text = f'{days_diff}d'
+
+                # Apply color based on days and color settings
+                if use_colors:
+                    if days_diff < 2:
+                        days_part = f'\033[32m({days_text})\033[0m'  # Green < 2 days
+                    elif days_diff <= 4:
+                        days_part = f'\033[33m({days_text})\033[0m'  # Yellow 2-4 days
+                    else:
+                        days_part = f'({days_text})'  # Standard (no color) > 4 days
+                else:
+                    days_part = f'({days_text})'
+            except:
+                days_part = '(?d)'
+        else:
+            days_part = '(?d)'
+
+        # Format: CIPLAT-1234 _3d_ [3pt, User] or CIPLAT-1234 _3d_ [3pt] if unassigned
         assignee_part = f', {assignee_name}' if assignee_name else ''
-        print(f'{i:2d}. {status_indicator} {key} [{story_points_str}pt{assignee_part}]: {summary}{summary_suffix} [{priority}]')
+        print(f'{i:2d}. {status_indicator} {key} {days_part} [{story_points_str}pt{assignee_part}]: {summary}{summary_suffix} [{priority}]')
 
     if not limited_issues:
         print('   No backlog items found in triage status')
