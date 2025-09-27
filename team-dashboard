@@ -1,50 +1,108 @@
 #!/usr/bin/env bash
 
-# CIPLAT Dashboard - Quick sprint and backlog overview
-# Shows current sprint status and top backlog items
+# Team Dashboard - Quick sprint and backlog overview
+# Shows current sprint status and top backlog items for any team
 
 SELF="$(basename "$0")"
 JIRA_API="$(dirname "$0")/jira-api"
+CONFIG_FILE="$(dirname "$0")/team-dashboard.conf"
 
 function usage {
     cat <<EOF
-$SELF: CIPLAT team dashboard showing current sprint and backlog
+$SELF: Team dashboard showing current sprint and backlog
 
 USAGE:
-    $SELF [OPTIONS]
+    $SELF [OPTIONS] [TEAM]
+
+ARGUMENTS:
+    TEAM                   Team name from config file (default: ciplat)
 
 OPTIONS:
+    -t, --team TEAM        Team name (same as positional argument)
     -s, --sprint SPRINT    Specify sprint name (default: auto-detect current sprint)
     -n, --count N          Number of backlog items to show (default: 10)
     -l, --length N         Summary length in characters (default: auto-detect)
     -c, --color           Force enable colors (auto-detects by default)
     --no-color            Force disable colors
+    --list-teams          Show available teams from config file
     -h, --help            Show this help
 
 EXAMPLES:
-    $SELF                                    # Show current sprint + top backlog
-    $SELF --sprint "CIPLAT 2025-10-07"     # Show specific sprint
-    $SELF --count 5                         # Show only top 5 backlog items
-    $SELF --length 80                       # Shorter summaries for narrow terminals
+    $SELF                                    # Show CIPLAT dashboard (default)
+    $SELF cdplat                            # Show CDPLAT dashboard
+    $SELF --team ciplat-support             # Show CIPLAT support dashboard
+    $SELF cdplat --count 5                  # CDPLAT with top 5 backlog items
+    $SELF --list-teams                      # Show available teams
 
 EOF
 }
 
+function list_teams {
+    if [[ ! -f "$CONFIG_FILE" ]]; then
+        echo "❌ Config file not found: $CONFIG_FILE"
+        return 1
+    fi
+
+    echo "Available teams:"
+    grep '^\[' "$CONFIG_FILE" | sed 's/\[//g; s/\]//g' | while read team; do
+        display_name=$(get_config_value "$team" "display_name")
+        echo "  $team - $display_name"
+    done
+}
+
+function get_config_value {
+    local team="$1"
+    local key="$2"
+
+    if [[ ! -f "$CONFIG_FILE" ]]; then
+        echo ""
+        return 1
+    fi
+
+    # Parse INI-style config file
+    awk -v team="[$team]" -v key="$key" '
+    BEGIN { in_section = 0 }
+    /^\[.*\]$/ {
+        in_section = ($0 == team) ? 1 : 0
+        next
+    }
+    in_section && $0 ~ "^" key "[ ]*=" {
+        sub("^" key "[ ]*=[ ]*", "")
+        print $0
+        exit
+    }
+    ' "$CONFIG_FILE"
+}
+
 function get_current_sprint {
+    local team="$1"
     # Try to detect current sprint by looking for recently updated tickets with sprint info
     # This is a heuristic since we can't access sprint API directly
     local current_date=$(date +"%Y-%m-%d")
-    echo "CIPLAT $(date -d "next monday" +"%Y-%m-%d" 2>/dev/null || echo "2025-10-07")"
+
+    # Team-specific sprint naming
+    case "$team" in
+        ciplat|ciplat-support)
+            echo "CIPLAT $(date -d "next monday" +"%Y-%m-%d" 2>/dev/null || echo "2025-10-07")"
+            ;;
+        cdplat|cdplat-support)
+            echo "CDPLAT $(date -d "next monday" +"%Y-%m-%d" 2>/dev/null || echo "2025-10-07")"
+            ;;
+        *)
+            echo "$team $(date -d "next monday" +"%Y-%m-%d" 2>/dev/null || echo "2025-10-07")"
+            ;;
+    esac
 }
 
 function show_sprint_status {
     local sprint_name="$1"
     local summary_length="$2"
+    local sprint_jql="$3"
     echo ">> CURRENT SPRINT: $sprint_name"
     echo "=" | head -c 60; echo
 
-    # Get recent tickets and categorize by status
-    local jql="project=CIPLAT AND updated >= -14d"
+    # Get recent tickets and categorize by status using team JQL
+    local jql="$sprint_jql"
     local response=$($JIRA_API GET "/search/jql?jql=$(printf '%s' "$jql" | sed 's/ /%20/g')&fields=key,summary,status,assignee,priority,customfield_10061,updated&maxResults=50" 2>/dev/null)
 
     if [[ $? -ne 0 ]] || [[ -z "$response" ]]; then
@@ -187,6 +245,7 @@ function show_backlog {
     local count=${1:-10}
     local summary_length=${2:-125}
     local use_colors=${3:-false}
+    local backlog_jql="$4"
     echo ">> TOP BACKLOG (Next $count items)"
     echo "=" | head -c 40; echo
 
@@ -197,9 +256,8 @@ function show_backlog {
     fi
     echo
 
-    # Get backlog items - include all backlog-related statuses
-    # Get them in rank order using the rank field
-    local jql="project=CIPLAT AND (status='Pending Triage' OR status='on Backlog' OR status='Blocked')"
+    # Get backlog items using team JQL
+    local jql="$backlog_jql"
     local response=$($JIRA_API GET "/search/jql?jql=$(printf '%s' "$jql" | sed 's/ /%20/g')&fields=key,summary,priority,created,assignee,customfield_10061,customfield_10022,status,updated&maxResults=100" 2>/dev/null)
 
     if [[ $? -ne 0 ]] || [[ -z "$response" ]]; then
@@ -386,10 +444,15 @@ function main {
     local backlog_count=10
     local summary_length=""
     local force_colors=""
+    local team="ciplat"  # default team
 
     # Parse arguments
     while [[ $# -gt 0 ]]; do
         case $1 in
+            -t|--team)
+                team="$2"
+                shift 2
+                ;;
             -s|--sprint)
                 sprint_name="$2"
                 shift 2
@@ -410,14 +473,23 @@ function main {
                 force_colors="false"
                 shift
                 ;;
+            --list-teams)
+                list_teams
+                exit 0
+                ;;
             -h|--help)
                 usage
                 exit 0
                 ;;
-            *)
+            -*)
                 echo "Unknown option: $1" >&2
                 usage
                 exit 1
+                ;;
+            *)
+                # Positional argument - team name
+                team="$1"
+                shift
                 ;;
         esac
     done
@@ -428,9 +500,21 @@ function main {
         exit 1
     fi
 
+    # Load team configuration
+    local sprint_jql=$(get_config_value "$team" "sprint_jql")
+    local backlog_jql=$(get_config_value "$team" "backlog_jql")
+    local display_name=$(get_config_value "$team" "display_name")
+
+    if [[ -z "$sprint_jql" ]] || [[ -z "$backlog_jql" ]]; then
+        echo "❌ Error: Team '$team' not found in config file $CONFIG_FILE" >&2
+        echo "Available teams:" >&2
+        list_teams >&2
+        exit 1
+    fi
+
     # Get current sprint name if not provided
     if [[ -z "$sprint_name" ]]; then
-        sprint_name=$(get_current_sprint)
+        sprint_name=$(get_current_sprint "$team")
     fi
 
     # Calculate summary length based on terminal width
@@ -447,16 +531,16 @@ function main {
         use_colors=true
     fi
 
-    echo "CIPLAT Team Dashboard - $(date '+%Y-%m-%d %H:%M') [Width: $terminal_width, Summary: $calculated_summary_length chars]"
+    echo "$display_name Dashboard - $(date '+%Y-%m-%d %H:%M') [Width: $terminal_width, Summary: $calculated_summary_length chars]"
     echo "=" | head -c 50; echo
     echo
 
     # Show sprint status
-    show_sprint_status "$sprint_name" "$calculated_summary_length"
+    show_sprint_status "$sprint_name" "$calculated_summary_length" "$sprint_jql"
     echo
 
     # Show backlog
-    show_backlog "$backlog_count" "$calculated_summary_length" "$use_colors"
+    show_backlog "$backlog_count" "$calculated_summary_length" "$use_colors" "$backlog_jql"
 }
 
 main "$@"
