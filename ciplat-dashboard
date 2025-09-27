@@ -16,12 +16,16 @@ USAGE:
 OPTIONS:
     -s, --sprint SPRINT    Specify sprint name (default: auto-detect current sprint)
     -n, --count N          Number of backlog items to show (default: 10)
+    -l, --length N         Summary length in characters (default: auto-detect)
+    -c, --color           Force enable colors (auto-detects by default)
+    --no-color            Force disable colors
     -h, --help            Show this help
 
 EXAMPLES:
     $SELF                                    # Show current sprint + top backlog
     $SELF --sprint "CIPLAT 2025-10-07"     # Show specific sprint
     $SELF --count 5                         # Show only top 5 backlog items
+    $SELF --length 80                       # Shorter summaries for narrow terminals
 
 EOF
 }
@@ -35,6 +39,7 @@ function get_current_sprint {
 
 function show_sprint_status {
     local sprint_name="$1"
+    local summary_length="$2"
     echo ">> CURRENT SPRINT: $sprint_name"
     echo "=" | head -c 60; echo
 
@@ -48,8 +53,8 @@ function show_sprint_status {
     fi
 
     # Parse and categorize by status
-    echo "$response" | python3 -c "
-import json, sys
+    echo "$response" | SUMMARY_LENGTH="$summary_length" python3 -c "
+import json, sys, os
 try:
     data = json.load(sys.stdin)
     issues = data.get('issues', [])
@@ -64,7 +69,12 @@ try:
     for issue in issues:
         fields = issue.get('fields', {})
         key = issue.get('key', 'N/A')  # Key is at top level, not in fields
-        summary = fields.get('summary', 'No summary')[:50]
+        full_summary = fields.get('summary', 'No summary')
+        max_length = int(os.environ.get('SUMMARY_LENGTH', 125))
+        summary = full_summary[:max_length]
+        # Only add ... if we actually truncated
+        summary_suffix = '...' if len(full_summary) > max_length else ''
+
         status_info = fields.get('status', {})
         status_name = status_info.get('name', 'Unknown')
         status_category = status_info.get('statusCategory', {}).get('key', '')
@@ -88,7 +98,7 @@ try:
 
         # Format: CIPLAT-1234 [3pt, User] or CIPLAT-1234 [3pt] if unassigned
         assignee_part = f', {assignee_name}' if assignee_name else ''
-        item = f'{key} [{story_points_str}pt{assignee_part}]: {summary}...'
+        item = f'{key} [{story_points_str}pt{assignee_part}]: {summary}{summary_suffix}'
 
         # Categorize by status
         if 'blocked' in status_name.lower():
@@ -137,9 +147,16 @@ except Exception as e:
 
 function show_backlog {
     local count=${1:-10}
+    local summary_length=${2:-125}
+    local use_colors=${3:-false}
     echo ">> TOP BACKLOG (Next $count items)"
     echo "=" | head -c 40; echo
-    echo -e "\033[32m[B]\033[0m on Backlog  \033[33m[T]\033[0m Pending Triage  \033[31m[X]\033[0m Blocked"
+
+    if [[ "$use_colors" == "true" ]]; then
+        echo -e "\033[32m[B]\033[0m on Backlog  \033[33m[T]\033[0m Pending Triage  \033[31m[X]\033[0m Blocked"
+    else
+        echo "[B] on Backlog  [T] Pending Triage  [X] Blocked"
+    fi
     echo
 
     # Get backlog items - include all backlog-related statuses
@@ -152,11 +169,12 @@ function show_backlog {
         return 1
     fi
 
-    echo "$response" | python3 -c "
-import json, sys
+    echo "$response" | SUMMARY_LENGTH="$summary_length" USE_COLORS="$use_colors" python3 -c "
+import json, sys, os
 try:
     data = json.load(sys.stdin)
     issues = data.get('issues', [])
+    use_colors = os.environ.get('USE_COLORS', 'false') == 'true'
 
     # Sort issues by rank field (customfield_10022) to get proper backlog order
     # Jira rank format is like '0|hzzwg1:2' or '0|i003pj:00ibi06020909'
@@ -191,7 +209,12 @@ try:
     for i, issue in enumerate(limited_issues, 1):
         fields = issue.get('fields', {})
         key = issue.get('key', 'N/A')  # Key is at top level, not in fields
-        summary = fields.get('summary', 'No summary')[:50]
+        full_summary = fields.get('summary', 'No summary')
+        max_length = int(os.environ.get('SUMMARY_LENGTH', 125))
+        summary = full_summary[:max_length]
+        # Only add ... if we actually truncated
+        summary_suffix = '...' if len(full_summary) > max_length else ''
+
         priority = fields.get('priority', {}).get('name', 'No Priority')
         status_name = fields.get('status', {}).get('name', 'Unknown')
         assignee = fields.get('assignee')
@@ -212,19 +235,29 @@ try:
         else:
             story_points_str = str(story_points)
 
-        # Add status indicator with ANSI colors (xterm compatible)
-        if status_name == 'on Backlog':
-            status_indicator = '\x1b[32m[B]\x1b[0m'  # Green
-        elif status_name == 'Pending Triage':
-            status_indicator = '\x1b[33m[T]\x1b[0m'  # Yellow
-        elif 'Blocked' in status_name or status_name == 'Blocked':
-            status_indicator = '\x1b[31m[X]\x1b[0m'  # Red
+        # Add status indicator with optional colors
+        if use_colors:
+            if status_name == 'on Backlog':
+                status_indicator = '\033[32m[B]\033[0m'  # Green
+            elif status_name == 'Pending Triage':
+                status_indicator = '\033[33m[T]\033[0m'  # Yellow
+            elif 'Blocked' in status_name or status_name == 'Blocked':
+                status_indicator = '\033[31m[X]\033[0m'  # Red
+            else:
+                status_indicator = '[?]'  # Unknown status
         else:
-            status_indicator = '[?]'  # Unknown status
+            if status_name == 'on Backlog':
+                status_indicator = '[B]'  # on Backlog
+            elif status_name == 'Pending Triage':
+                status_indicator = '[T]'  # Pending Triage
+            elif 'Blocked' in status_name or status_name == 'Blocked':
+                status_indicator = '[X]'  # Blocked
+            else:
+                status_indicator = '[?]'  # Unknown status
 
         # Format: CIPLAT-1234 [3pt, User] or CIPLAT-1234 [3pt] if unassigned
         assignee_part = f', {assignee_name}' if assignee_name else ''
-        print(f'{i:2d}. {status_indicator} {key} [{story_points_str}pt{assignee_part}]: {summary}... [{priority}]')
+        print(f'{i:2d}. {status_indicator} {key} [{story_points_str}pt{assignee_part}]: {summary}{summary_suffix} [{priority}]')
 
     if not limited_issues:
         print('   No backlog items found in triage status')
@@ -236,9 +269,48 @@ except Exception as e:
 "
 }
 
+function get_terminal_width {
+    # Try to get terminal width, fallback to a generous default for modern terminals
+    local width=$(tput cols 2>/dev/null || echo "120")
+    echo "$width"
+}
+
+function supports_colors {
+    # Check if terminal supports colors - be more permissive for xterm
+    [[ "${TERM}" == *"xterm"* ]] || [[ "${TERM}" == *"color"* ]] || [[ "${TERM}" == "screen"* ]]
+}
+
+function calculate_summary_length {
+    local terminal_width="$1"
+    local base_length=125  # Default length
+
+    # If length was specified via -l, use that
+    if [[ -n "$2" ]]; then
+        echo "$2"
+        return
+    fi
+
+    # Calculate dynamic length based on terminal width
+    # Reserve space for: "NN. [X] CIPLAT-NNNN [NNpt, username]: ... [Priority]"
+    # That's roughly 50-60 chars, so summary gets the rest
+    local reserved_space=60
+    local available_space=$((terminal_width - reserved_space))
+
+    # Use at least 80 chars (2.5x the original 50), at most 250 chars
+    if [[ $available_space -lt 80 ]]; then
+        echo "80"  # Generous minimum for modern terminals
+    elif [[ $available_space -gt 250 ]]; then
+        echo "250"
+    else
+        echo "$available_space"
+    fi
+}
+
 function main {
     local sprint_name=""
     local backlog_count=10
+    local summary_length=""
+    local force_colors=""
 
     # Parse arguments
     while [[ $# -gt 0 ]]; do
@@ -250,6 +322,18 @@ function main {
             -n|--count)
                 backlog_count="$2"
                 shift 2
+                ;;
+            -l|--length)
+                summary_length="$2"
+                shift 2
+                ;;
+            -c|--color)
+                force_colors="true"
+                shift
+                ;;
+            --no-color)
+                force_colors="false"
+                shift
                 ;;
             -h|--help)
                 usage
@@ -274,16 +358,30 @@ function main {
         sprint_name=$(get_current_sprint)
     fi
 
-    echo "CIPLAT Team Dashboard - $(date '+%Y-%m-%d %H:%M')"
+    # Calculate summary length based on terminal width
+    local terminal_width=$(get_terminal_width)
+    local calculated_summary_length=$(calculate_summary_length "$terminal_width" "$summary_length")
+
+    # Determine if colors should be used
+    local use_colors=false
+    if [[ "$force_colors" == "true" ]]; then
+        use_colors=true
+    elif [[ "$force_colors" == "false" ]]; then
+        use_colors=false
+    elif supports_colors; then
+        use_colors=true
+    fi
+
+    echo "CIPLAT Team Dashboard - $(date '+%Y-%m-%d %H:%M') [Width: $terminal_width, Summary: $calculated_summary_length chars]"
     echo "=" | head -c 50; echo
     echo
 
     # Show sprint status
-    show_sprint_status "$sprint_name"
+    show_sprint_status "$sprint_name" "$calculated_summary_length"
     echo
 
     # Show backlog
-    show_backlog "$backlog_count"
+    show_backlog "$backlog_count" "$calculated_summary_length" "$use_colors"
 }
 
 main "$@"
