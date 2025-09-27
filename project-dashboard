@@ -1,0 +1,414 @@
+#!/usr/bin/env python3
+
+"""
+Project Dashboard - Epic-based project status report
+Shows tickets for specific epics with status breakdown and contributor progress
+"""
+
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+from collections import defaultdict
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
+
+class ProjectDashboard:
+    def __init__(self):
+        self.script_dir = Path(__file__).parent
+        self.jira_api = self.script_dir / "jira-api"
+
+    def get_terminal_width(self) -> int:
+        """Get terminal width, fallback to generous default for modern terminals."""
+        try:
+            return shutil.get_terminal_size().columns
+        except:
+            return 120
+
+    def supports_colors(self) -> bool:
+        """Check if terminal supports colors - be more permissive for xterm."""
+        term = os.environ.get('TERM', '')
+        return any(term_type in term for term_type in ['xterm', 'color', 'screen'])
+
+    def calculate_summary_length(self, terminal_width: int, override_length: Optional[int] = None) -> int:
+        """Calculate optimal summary length based on terminal width."""
+        if override_length:
+            return override_length
+
+        # Reserve space for: "[S] CIPLAT-NNNN (Nd) [NNpt, username]: ..."
+        # That's roughly 45-50 chars, so summary gets the rest
+        reserved_space = 50
+        available_space = terminal_width - reserved_space
+
+        # Use at least 80 chars, at most 250 chars
+        if available_space < 80:
+            return 80
+        elif available_space > 250:
+            return 250
+        else:
+            return available_space
+
+    def call_jira_api(self, endpoint: str) -> Optional[dict]:
+        """Call jira-api script and return parsed JSON response."""
+        try:
+            cmd = [str(self.jira_api), "GET", endpoint]
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+
+            if result.returncode != 0:
+                print(f"❌ Jira API call failed: {result.stderr}", file=sys.stderr)
+                return None
+
+            return json.loads(result.stdout)
+        except (subprocess.TimeoutExpired, json.JSONDecodeError, Exception) as e:
+            print(f"❌ Error calling Jira API: {e}", file=sys.stderr)
+            return None
+
+    def calculate_days_since_update(self, updated_str: str) -> Tuple[int, str]:
+        """Calculate days since last update and return (days, formatted_string)."""
+        try:
+            # Parse ISO format: 2025-09-26T14:10:21.467-0500
+            # Fix timezone format for Python compatibility
+            if updated_str.count(':') == 2 and ('+' in updated_str[-5:] or '-' in updated_str[-5:]):
+                # Add colon to timezone: -0500 -> -05:00
+                updated_str = updated_str[:-2] + ':' + updated_str[-2:]
+
+            updated_dt = datetime.fromisoformat(updated_str)
+            now = datetime.now(timezone.utc)
+            days_diff = (now - updated_dt.astimezone(timezone.utc)).days
+
+            if days_diff == 0:
+                return days_diff, 'today'
+            elif days_diff == 1:
+                return days_diff, '1d'
+            else:
+                return days_diff, f'{days_diff}d'
+        except Exception:
+            return -1, '?d'
+
+    def format_days_with_color(self, days: int, days_text: str, use_colors: bool) -> str:
+        """Format days with appropriate color coding."""
+        if use_colors:
+            if days < 2:
+                return f'\033[32m({days_text})\033[0m'  # Green < 2 days
+            elif days <= 4:
+                return f'\033[33m({days_text})\033[0m'  # Yellow 2-4 days
+            else:
+                return f'({days_text})'  # Standard (no color) > 4 days
+        else:
+            return f'({days_text})'
+
+    def format_status_indicator(self, status_name: str, use_colors: bool) -> str:
+        """Format status indicator with appropriate colors."""
+        # Map status to single letter indicators
+        status_map = {
+            'Pending Triage': 'T',
+            'on Backlog': 'B',
+            'To Do': 'T',
+            'In Progress': 'P',
+            'In Review': 'R',
+            'Pending Review': 'R',
+            'Done': 'D',
+            'Closed': 'D',
+            'Blocked': 'X'
+        }
+
+        letter = status_map.get(status_name, '?')
+
+        if use_colors:
+            if letter == 'D':
+                return f'\033[32m[{letter}]\033[0m'  # Green for done
+            elif letter in ['P', 'R']:
+                return f'\033[33m[{letter}]\033[0m'  # Yellow for active
+            elif letter == 'X':
+                return f'\033[31m[{letter}]\033[0m'  # Red for blocked
+            else:
+                return f'[{letter}]'  # Standard for todo/backlog
+        else:
+            return f'[{letter}]'
+
+    def format_story_points(self, points) -> str:
+        """Format story points as integer if whole number, otherwise float."""
+        if points is None:
+            return "0"
+        try:
+            if float(points) == int(float(points)):
+                return str(int(float(points)))
+            else:
+                return str(points)
+        except (ValueError, TypeError):
+            return "0"
+
+    def get_assignee_name(self, assignee_data) -> str:
+        """Extract username from assignee data, preferring email username."""
+        if not assignee_data:
+            return ""
+
+        email = assignee_data.get('emailAddress', '')
+        if email and '@' in email:
+            return email.split('@')[0]  # LDAP username
+        else:
+            return assignee_data.get('displayName', '')
+
+    def get_epic_tickets(self, epic_keys: List[str]) -> List[dict]:
+        """Get all tickets for the given epic(s)."""
+        # Build JQL for epic tickets
+        if len(epic_keys) == 1:
+            jql = f'"Epic Link" = {epic_keys[0]}'
+        else:
+            epic_list = ','.join(epic_keys)
+            jql = f'"Epic Link" IN ({epic_list})'
+
+        jql_encoded = jql.replace(' ', '%20').replace('"', '%22')
+        endpoint = f"/search/jql?jql={jql_encoded}&fields=key,summary,status,assignee,priority,customfield_10061,updated,created,creator&maxResults=200"
+
+        response = self.call_jira_api(endpoint)
+        if not response:
+            return []
+
+        return response.get('issues', [])
+
+    def categorize_tickets_by_status(self, issues: List[dict], summary_length: int, use_colors: bool) -> Tuple[Dict[str, List[str]], Dict[str, int]]:
+        """Categorize tickets by status and return formatted lines plus counts."""
+        categories = defaultdict(list)
+        status_counts = defaultdict(int)
+
+        for issue in issues:
+            fields = issue.get('fields', {})
+            key = issue.get('key', 'N/A')
+
+            # Get basic fields
+            full_summary = fields.get('summary', 'No summary')
+            summary = full_summary[:summary_length]
+            summary_suffix = '...' if len(full_summary) > summary_length else ''
+
+            status_info = fields.get('status', {})
+            status_name = status_info.get('name', 'Unknown')
+            status_category = status_info.get('statusCategory', {}).get('key', '')
+
+            assignee = fields.get('assignee')
+            assignee_name = self.get_assignee_name(assignee)
+
+            story_points = self.format_story_points(fields.get('customfield_10061'))
+
+            # Calculate days since update
+            updated_str = fields.get('updated', '')
+            days, days_text = self.calculate_days_since_update(updated_str)
+            days_part = self.format_days_with_color(days, days_text, use_colors)
+
+            # Status indicator
+            status_indicator = self.format_status_indicator(status_name, use_colors)
+
+            # Format ticket line
+            assignee_part = f', {assignee_name}' if assignee_name else ''
+            item = f'{status_indicator} {key} {days_part} [{story_points}pt{assignee_part}]: {summary}{summary_suffix}'
+
+            # Categorize by status
+            if status_category == 'done':
+                categories['done'].append(item)
+                status_counts['done'] += 1
+            elif 'blocked' in status_name.lower():
+                categories['blocked'].append(item)
+                status_counts['blocked'] += 1
+            elif status_category == 'new' or 'triage' in status_name.lower() or 'backlog' in status_name.lower():
+                categories['todo'].append(item)
+                status_counts['todo'] += 1
+            elif status_category == 'indeterminate' or 'progress' in status_name.lower():
+                categories['in_progress'].append(item)
+                status_counts['in_progress'] += 1
+            elif 'review' in status_name.lower():
+                categories['in_review'].append(item)
+                status_counts['in_review'] += 1
+            else:
+                categories['other'].append(item)
+                status_counts['other'] += 1
+
+        return dict(categories), dict(status_counts)
+
+    def calculate_contributor_stats(self, issues: List[dict]) -> Dict[str, Dict[str, any]]:
+        """Calculate per-person statistics for the epic."""
+        stats = defaultdict(lambda: {
+            'created': 0,
+            'resolved': 0,
+            'created_points': 0,
+            'resolved_points': 0,
+            'total_points': 0
+        })
+
+        for issue in issues:
+            fields = issue.get('fields', {})
+
+            # Get assignee and creator
+            assignee = fields.get('assignee')
+            creator = fields.get('creator')
+            assignee_name = self.get_assignee_name(assignee)
+            creator_name = self.get_assignee_name(creator)
+
+            # Get story points
+            story_points = float(self.format_story_points(fields.get('customfield_10061')) or 0)
+
+            # Track creation
+            if creator_name:
+                stats[creator_name]['created'] += 1
+                stats[creator_name]['created_points'] += story_points
+
+            # Track assignment and resolution
+            if assignee_name:
+                stats[assignee_name]['total_points'] += story_points
+
+                # Check if resolved
+                status_category = fields.get('status', {}).get('statusCategory', {}).get('key', '')
+                if status_category == 'done':
+                    stats[assignee_name]['resolved'] += 1
+                    stats[assignee_name]['resolved_points'] += story_points
+
+        return dict(stats)
+
+    def show_epic_progress(self, issues: List[dict], epic_keys: List[str]) -> None:
+        """Show epic progress report with contributor statistics."""
+        print(">> EPIC PROGRESS REPORT")
+        print("=" * 40)
+
+        if not issues:
+            print("No tickets found for epic(s)")
+            return
+
+        stats = self.calculate_contributor_stats(issues)
+
+        if not stats:
+            print("No contributor data found")
+            return
+
+        print(f"{'Person':<15} {'Created':<8} {'Resolved':<9} {'Points %':<10}")
+        print("-" * 45)
+
+        for person, data in sorted(stats.items()):
+            created_count = data['created']
+            resolved_count = data['resolved']
+            total_points = data['total_points']
+            resolved_points = data['resolved_points']
+
+            if total_points > 0:
+                points_percent = f"{(resolved_points / total_points * 100):.0f}%"
+            else:
+                points_percent = "0%"
+
+            print(f"{person:<15} {created_count:<8} {resolved_count:<9} {points_percent:<10}")
+
+    def show_project_status(self, epic_keys: List[str], summary_length: int, use_colors: bool) -> None:
+        """Show project status for the given epic(s)."""
+        # Get epic details
+        print(f">> PROJECT STATUS: {', '.join(epic_keys)}")
+        print("=" * 60)
+        print()
+
+        # Get all tickets for the epic(s)
+        issues = self.get_epic_tickets(epic_keys)
+
+        if not issues:
+            print(f"No tickets found for epic(s): {', '.join(epic_keys)}")
+            return
+
+        # Categorize and count tickets
+        categories, status_counts = self.categorize_tickets_by_status(issues, summary_length, use_colors)
+
+        # Show status summary
+        total_tickets = len(issues)
+        print(f"TOTAL TICKETS: {total_tickets}")
+
+        if status_counts:
+            parts = []
+            if status_counts.get('done', 0) > 0:
+                parts.append(f"Done: {status_counts['done']}")
+            if status_counts.get('in_progress', 0) > 0:
+                parts.append(f"In Progress: {status_counts['in_progress']}")
+            if status_counts.get('in_review', 0) > 0:
+                parts.append(f"In Review: {status_counts['in_review']}")
+            if status_counts.get('todo', 0) > 0:
+                parts.append(f"To Do: {status_counts['todo']}")
+            if status_counts.get('blocked', 0) > 0:
+                parts.append(f"Blocked: {status_counts['blocked']}")
+            if status_counts.get('other', 0) > 0:
+                parts.append(f"Other: {status_counts['other']}")
+
+            print(" | ".join(parts))
+        print()
+
+        # Display sections (skip done, just show count above)
+        for section_name, section_key in [
+            ('BLOCKED:', 'blocked'),
+            ('TO-DO:', 'todo'),
+            ('IN PROGRESS:', 'in_progress'),
+            ('IN REVIEW:', 'in_review'),
+            ('OTHER:', 'other')
+        ]:
+            items = categories.get(section_key, [])
+            if items:
+                print(section_name)
+                for item in items:
+                    print(f'   {item}')
+                print()
+
+        print()
+        self.show_epic_progress(issues, epic_keys)
+
+    def run(self, args) -> None:
+        """Main dashboard execution."""
+        # Check if jira-api script exists
+        if not self.jira_api.exists() or not os.access(self.jira_api, os.X_OK):
+            print(f"❌ Error: jira-api script not found at {self.jira_api}", file=sys.stderr)
+            sys.exit(1)
+
+        # Parse epic keys
+        epic_keys = []
+        if args.epics:
+            for epic_arg in args.epics:
+                # Split by comma if multiple epics in one argument
+                epic_keys.extend([e.strip() for e in epic_arg.split(',')])
+
+        if not epic_keys:
+            print("❌ Error: At least one epic key is required", file=sys.stderr)
+            sys.exit(1)
+
+        # Calculate summary length based on terminal width
+        terminal_width = self.get_terminal_width()
+        calculated_summary_length = self.calculate_summary_length(terminal_width, args.length)
+
+        # Determine if colors should be used
+        use_colors = False
+        if args.color:
+            use_colors = True
+        elif args.no_color:
+            use_colors = False
+        elif self.supports_colors():
+            use_colors = True
+
+        # Display header
+        epic_display = ', '.join(epic_keys)
+        print(f"Project Dashboard - {datetime.now().strftime('%Y-%m-%d %H:%M')} [Width: {terminal_width}, Summary: {calculated_summary_length} chars]")
+        print("=" * 50)
+        print()
+
+        # Show project status
+        self.show_project_status(epic_keys, calculated_summary_length, use_colors)
+
+
+def main():
+    parser = argparse.ArgumentParser(description='Project dashboard showing epic status and contributor progress')
+    parser.add_argument('epics', nargs='+', help='Epic key(s) - e.g., CIPLAT-1234 or CIPLAT-1234,CIPLAT-5678')
+    parser.add_argument('-l', '--length', type=int, help='Summary length in characters (default: auto-detect)')
+    parser.add_argument('-c', '--color', action='store_true', help='Force enable colors (auto-detects by default)')
+    parser.add_argument('--no-color', action='store_true', help='Force disable colors')
+
+    args = parser.parse_args()
+
+    dashboard = ProjectDashboard()
+    dashboard.run(args)
+
+
+if __name__ == '__main__':
+    main()

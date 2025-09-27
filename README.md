@@ -11,6 +11,8 @@ This repo contains tools I have built to enable me to use AI more easily in my d
 - **gitlab-api** - Bash wrapper for GitLab REST API with keychain authentication
 - **team-dashboard** - Configurable team dashboard showing current sprint status and backlog items (supports multiple teams via config file)
 - **find-current-sprint** - Helper script to find the active sprint name for a given Jira project
+- **project-dashboard** - Epic-based project status report showing ticket breakdown and contributor progress
+- **find-active-epics** - Helper script to find epics with recent activity for a given Jira project
 
 ## API Usage Notes
 
@@ -105,4 +107,49 @@ find-current-sprint ORC       # → "CD Platform Sprint 131"
 
 # Use output to update config
 echo "sprint_jql = project=CIPLAT AND sprint = \"$(./find-current-sprint CIPLAT)\""
+```
+
+### Project Dashboard (`project-dashboard`)
+- **Epic tracking**: Shows all tickets linked to specific epic(s) with status breakdown
+- **Status indicators**: Color-coded status markers ([D]one, [P]rogress, [R]eview, [T]odo, [X]blocked)
+- **Activity tracking**: Days since last update with color coding (green < 2d, yellow 2-4d)
+- **Progress metrics**: Per-person creation/resolution stats with story point percentages
+- **Multi-epic support**: Analyze multiple related epics together
+
+**Examples:**
+```bash
+# Single epic status
+project-dashboard CIPLAT-2148
+
+# Multiple epics
+project-dashboard CIPLAT-2148,CIPLAT-2150
+
+# With options
+project-dashboard CIPLAT-2148 --color --length 120
+```
+
+**Output Format:**
+- Status breakdown with counts (Done: 5 | To Do: 11 | Blocked: 1)
+- Tickets by status with format: `[S] TICKET-123 (2d) [3pt, user]: Summary...`
+- Progress report showing created/resolved tickets and story point completion % per person
+
+### Find Active Epics (`find-active-epics`)
+- **Purpose**: Discovers epics with recent activity to identify active projects
+- **Usage**: `find-active-epics PROJECT_KEY [--days N]`
+- **Default timeframe**: 30 days (configurable with `--days`)
+- **Output**: Epic keys, summaries, and days since last update
+- **Use case**: Find which epics to analyze with `project-dashboard`
+
+**Examples:**
+```bash
+# Find active CIPLAT epics (last 30 days)
+find-active-epics CIPLAT
+
+# Find MARVIN epics with activity in last 60 days
+find-active-epics MARVIN --days 60
+
+# Use output with project dashboard
+./find-active-epics CIPLAT --days 60
+# → CIPLAT-2148: Nexus Replacement (Cloudsmith) - Phase 1 (updated 38d ago)
+./project-dashboard CIPLAT-2148
 ```
