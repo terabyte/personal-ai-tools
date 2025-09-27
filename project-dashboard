@@ -229,15 +229,17 @@ class ProjectDashboard:
 
         return dict(categories), dict(status_counts)
 
-    def calculate_contributor_stats(self, issues: List[dict]) -> Dict[str, Dict[str, any]]:
-        """Calculate per-person statistics for the epic."""
+    def calculate_contributor_stats(self, issues: List[dict]) -> Tuple[Dict[str, Dict[str, any]], float]:
+        """Calculate per-person statistics for the epic and return stats plus total epic points."""
         stats = defaultdict(lambda: {
             'created': 0,
             'resolved': 0,
             'created_points': 0,
             'resolved_points': 0,
-            'total_points': 0
+            'assigned_points': 0
         })
+
+        total_epic_points = 0
 
         for issue in issues:
             fields = issue.get('fields', {})
@@ -250,6 +252,7 @@ class ProjectDashboard:
 
             # Get story points
             story_points = float(self.format_story_points(fields.get('customfield_10061')) or 0)
+            total_epic_points += story_points
 
             # Track creation
             if creator_name:
@@ -258,7 +261,7 @@ class ProjectDashboard:
 
             # Track assignment and resolution
             if assignee_name:
-                stats[assignee_name]['total_points'] += story_points
+                stats[assignee_name]['assigned_points'] += story_points
 
                 # Check if resolved
                 status_category = fields.get('status', {}).get('statusCategory', {}).get('key', '')
@@ -266,40 +269,90 @@ class ProjectDashboard:
                     stats[assignee_name]['resolved'] += 1
                     stats[assignee_name]['resolved_points'] += story_points
 
-        return dict(stats)
+        return dict(stats), total_epic_points
 
-    def show_epic_progress(self, issues: List[dict], epic_keys: List[str]) -> None:
+    def show_epic_progress(self, issues: List[dict], epic_keys: List[str], show_all: bool = False) -> None:
         """Show epic progress report with contributor statistics."""
         print(">> EPIC PROGRESS REPORT")
-        print("=" * 40)
+        print("=" * 70)
 
         if not issues:
             print("No tickets found for epic(s)")
             return
 
-        stats = self.calculate_contributor_stats(issues)
+        stats, total_epic_points = self.calculate_contributor_stats(issues)
 
         if not stats:
             print("No contributor data found")
             return
 
-        print(f"{'Person':<15} {'Created':<8} {'Resolved':<9} {'Points %':<10}")
-        print("-" * 45)
+        # Calculate total tickets for percentages
+        total_tickets = len(issues)
 
-        for person, data in sorted(stats.items()):
+        # Calculate percentages and filter contributors
+        contributor_data = []
+        for person, data in stats.items():
             created_count = data['created']
             resolved_count = data['resolved']
-            total_points = data['total_points']
+            created_points = data['created_points']
             resolved_points = data['resolved_points']
 
-            if total_points > 0:
-                points_percent = f"{(resolved_points / total_points * 100):.0f}%"
+            # Calculate percentages of total epic tickets and points
+            if total_tickets > 0:
+                created_ticket_percent = (created_count / total_tickets * 100)
+                resolved_ticket_percent = (resolved_count / total_tickets * 100)
             else:
-                points_percent = "0%"
+                created_ticket_percent = 0
+                resolved_ticket_percent = 0
 
-            print(f"{person:<15} {created_count:<8} {resolved_count:<9} {points_percent:<10}")
+            if total_epic_points > 0:
+                created_points_percent = (created_points / total_epic_points * 100)
+                resolved_points_percent = (resolved_points / total_epic_points * 100)
+            else:
+                created_points_percent = 0
+                resolved_points_percent = 0
 
-    def show_project_status(self, epic_keys: List[str], summary_length: int, use_colors: bool) -> None:
+            # Filter out zeros and low contributors (unless --show-all)
+            if not show_all:
+                # Skip if all zeros
+                if created_count == 0 and resolved_count == 0:
+                    continue
+                # Skip if both point percentages are under 10%
+                if created_points_percent < 10 and resolved_points_percent < 10:
+                    continue
+
+            contributor_data.append({
+                'person': person,
+                'created': created_count,
+                'resolved': resolved_count,
+                'created_points': created_points,
+                'resolved_points': resolved_points,
+                'created_ticket_percent': created_ticket_percent,
+                'resolved_ticket_percent': resolved_ticket_percent,
+                'created_points_percent': created_points_percent,
+                'resolved_points_percent': resolved_points_percent
+            })
+
+        # Sort by story points resolved (descending)
+        contributor_data.sort(key=lambda x: x['resolved_points_percent'], reverse=True)
+
+        if not contributor_data:
+            print("No significant contributors found (use --show-all to see everyone)")
+            return
+
+        print(f"{'Person':<15} {'Created':<20} {'Resolved':<21} {'Created %':<12} {'Done %':<10}")
+        print(f"{'':<15} {'Tickets (pts)':<20} {'Tickets (pts)':<21} {'Tickets (pts)':<12} {'Tickets (pts)':<10}")
+        print("-" * 80)
+
+        for data in contributor_data:
+            created_display = f"{data['created']} ({data['created_points']:.0f})"
+            resolved_display = f"{data['resolved']} ({data['resolved_points']:.0f})"
+            created_percent_str = f"{data['created_ticket_percent']:.0f}% ({data['created_points_percent']:.0f}%)"
+            resolved_percent_str = f"{data['resolved_ticket_percent']:.0f}% ({data['resolved_points_percent']:.0f}%)"
+
+            print(f"{data['person']:<15} {created_display:<20} {resolved_display:<21} {created_percent_str:<12} {resolved_percent_str:<10}")
+
+    def show_project_status(self, epic_keys: List[str], summary_length: int, use_colors: bool, show_all: bool = False) -> None:
         """Show project status for the given epic(s)."""
         # Get epic details
         print(f">> PROJECT STATUS: {', '.join(epic_keys)}")
@@ -354,7 +407,7 @@ class ProjectDashboard:
                 print()
 
         print()
-        self.show_epic_progress(issues, epic_keys)
+        self.show_epic_progress(issues, epic_keys, show_all)
 
     def run(self, args) -> None:
         """Main dashboard execution."""
@@ -394,7 +447,7 @@ class ProjectDashboard:
         print()
 
         # Show project status
-        self.show_project_status(epic_keys, calculated_summary_length, use_colors)
+        self.show_project_status(epic_keys, calculated_summary_length, use_colors, args.show_all)
 
 
 def main():
@@ -403,6 +456,7 @@ def main():
     parser.add_argument('-l', '--length', type=int, help='Summary length in characters (default: auto-detect)')
     parser.add_argument('-c', '--color', action='store_true', help='Force enable colors (auto-detects by default)')
     parser.add_argument('--no-color', action='store_true', help='Force disable colors')
+    parser.add_argument('--show-all', action='store_true', help='Show all contributors (default: hide those with <10% in both created and resolved)')
 
     args = parser.parse_args()
 
