@@ -10,6 +10,7 @@ This repo contains tools I have built to enable me to use AI more easily in my d
 - **calendar-link** - Generates Google Calendar event URLs from command line parameters with optional browser integration
 - **gitlab-api** - Bash wrapper for GitLab REST API with keychain authentication
 - **team-dashboard** - Configurable team dashboard showing current sprint status and backlog items (supports multiple teams via config file)
+- **find-current-sprint** - Helper script to find the active sprint name for a given Jira project
 
 ## API Usage Notes
 
@@ -85,6 +86,23 @@ Edit `team-dashboard.conf` to add new teams:
 ```ini
 [my-team]
 display_name = My Team Name
-sprint_jql = project IN (PROJ1,PROJ2) AND updated >= -14d
+sprint_jql = project IN (PROJ1,PROJ2) AND sprint = "My Sprint Name"
 backlog_jql = project IN (PROJ1,PROJ2) AND status IN ('Pending Triage','on Backlog','Blocked')
+```
+
+### Find Current Sprint (`find-current-sprint`)
+- **Purpose**: Discovers the active sprint name for any Jira project
+- **Usage**: `find-current-sprint PROJECT_KEY`
+- **Output**: Current sprint name (e.g., "CIPLAT 2025-10-07", "CD Platform Sprint 131")
+- **Use case**: Get sprint names to update `team-dashboard.conf` with accurate sprint-based JQL queries
+
+**Examples:**
+```bash
+# Find current sprints
+find-current-sprint CIPLAT    # → "CIPLAT 2025-10-07"
+find-current-sprint MARVIN    # → "CD Platform Sprint 131"
+find-current-sprint ORC       # → "CD Platform Sprint 131"
+
+# Use output to update config
+echo "sprint_jql = project=CIPLAT AND sprint = \"$(./find-current-sprint CIPLAT)\""
 ```

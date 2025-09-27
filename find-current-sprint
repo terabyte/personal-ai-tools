@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+
+# Helper script to find the current active sprint for a project
+
+SELF="$(basename "$0")"
+JIRA_API="$(dirname "$0")/jira-api"
+
+function usage {
+    cat <<EOF
+$SELF: Find the current active sprint for a project
+
+USAGE:
+    $SELF PROJECT_KEY
+
+ARGUMENTS:
+    PROJECT_KEY    Jira project key (e.g., CIPLAT, MARVIN, ORC)
+
+EXAMPLES:
+    $SELF CIPLAT    # Find current CIPLAT sprint
+    $SELF MARVIN    # Find current MARVIN sprint
+
+OUTPUTS:
+    Sprint name (e.g., "CIPLAT 2025-10-07") or error message
+
+EOF
+}
+
+function find_active_sprint {
+    local project="$1"
+
+    # Get a recent ticket from the project that has sprint info
+    local jql="project=$project AND sprint is not EMPTY"
+    local response=$($JIRA_API GET "/search/jql?jql=$(printf '%s' "$jql" | sed 's/ /%20/g')&fields=customfield_10021&maxResults=10" 2>/dev/null)
+
+    if [[ $? -ne 0 ]] || [[ -z "$response" ]]; then
+        echo "❌ Failed to query project $project" >&2
+        return 1
+    fi
+
+    # Parse sprint information to find active sprint
+    echo "$response" | python3 -c "
+import json, sys
+try:
+    data = json.load(sys.stdin)
+    issues = data.get('issues', [])
+
+    active_sprints = set()
+
+    for issue in issues:
+        fields = issue.get('fields', {})
+        sprints = fields.get('customfield_10021', [])
+
+        if sprints:
+            for sprint in sprints:
+                if sprint.get('state') == 'active':
+                    sprint_name = sprint.get('name', '')
+                    if sprint_name:
+                        active_sprints.add(sprint_name)
+
+    if active_sprints:
+        # If multiple active sprints, pick the first one alphabetically
+        print(sorted(active_sprints)[0])
+    else:
+        print('No active sprint found', file=sys.stderr)
+        sys.exit(1)
+
+except Exception as e:
+    print(f'Error parsing sprint data: {e}', file=sys.stderr)
+    sys.exit(1)
+"
+}
+
+function main {
+    if [[ $# -eq 0 ]] || [[ "$1" == "-h" ]] || [[ "$1" == "--help" ]]; then
+        usage
+        exit 0
+    fi
+
+    local project="$1"
+
+    # Check if jira-api script exists
+    if [[ ! -x "$JIRA_API" ]]; then
+        echo "❌ Error: jira-api script not found at $JIRA_API" >&2
+        exit 1
+    fi
+
+    find_active_sprint "$project"
+}
+
+main "$@"
