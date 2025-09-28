@@ -29,6 +29,43 @@ All Atlassian tools (`jira-api`, `jira-export`, `confluence-api`) support:
 - **Field IDs**: Bug tickets require environment field (`customfield_11674`)
 - **Issue types**: Task=10009, Bug=10017, New Feature=11081 (CIPLAT project)
 
+**Critical Field IDs (Indeed-specific):**
+- **Story Points**: `customfield_10061` (not 10026)
+- **Sprint**: `customfield_10021` (contains sprint info with start/end dates)
+- **Rank**: `customfield_10022` (controls backlog ordering, format: `0|prefix:suffix`)
+
+**Common JQL Patterns:**
+```bash
+# Recent activity
+./jira-api GET "/search/jql?jql=project%3DCIPLAT%20AND%20updated%20%3E%3D%20-14d&fields=key,summary,status"
+
+# Multi-project search
+./jira-api GET "/search/jql?jql=project%20IN%20(CIPLAT,GITLAB,NEXUS)&fields=key,summary"
+
+# Sprint tickets
+./jira-api GET "/search/jql?jql=project%3DCIPLAT%20AND%20sprint%20%3D%20%22CIPLAT%202025-10-07%22&fields=key,summary,status"
+
+# Epic children
+./jira-api GET "/search/jql?jql=%22Epic%20Link%22%20%3D%20CIPLAT-2148&fields=key,summary,status"
+
+# Status filtering
+./jira-api GET "/search/jql?jql=project%3DCIPLAT%20AND%20status%20IN%20(%27Pending%20Triage%27,%27on%20Backlog%27)&fields=key,summary"
+```
+
+**API Endpoint Failures:**
+- **Board endpoints DON'T WORK**: `/board/ID`, `/agile/1.0/board/ID` return 404 HTML
+- **Use JQL instead**: Query tickets directly with sprint/status filters
+- **HTML responses**: Usually mean wrong endpoint or permissions issue
+
+**URL Encoding Requirements:**
+- **Spaces**: `%20` (e.g., `project%20%3D%20CIPLAT`)
+- **Quotes**: `%22` (e.g., `%22Epic%20Link%22`)
+- **Equals**: `%3D` (e.g., `project%3DCIPLAT`)
+- **IN clauses**: `%20IN%20` (e.g., `status%20IN%20(...)`)
+
+**Status Names (exact case):**
+- `"Pending Triage"`, `"on Backlog"`, `"In Progress"`, `"Pending Review"`, `"Done"`, `"Closed"`, `"Blocked"`
+
 ### Confluence API (`confluence-api`)
 - **Space-specific searches**: Use `space=SPACEKEY` parameter for better results
 - **Blog posts**: Search with `type=blogpost and space=SPACEKEY`
