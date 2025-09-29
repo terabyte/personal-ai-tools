@@ -1,0 +1,429 @@
+#!/usr/bin/env python3
+
+"""
+Backlog Cleanup - Show backlog items for triage and prioritization
+Displays backlog tickets in rank order with status indicators
+"""
+
+import argparse
+import configparser
+import json
+import os
+import shutil
+import subprocess
+import sys
+from datetime import datetime, timezone, timedelta
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
+
+class BacklogCleanup:
+    def __init__(self):
+        self.script_dir = Path(__file__).parent
+        self.jira_api = self.script_dir / "jira-api"
+        self.config_file = self.script_dir / "team-dashboard.conf"
+
+    def get_terminal_width(self) -> int:
+        """Get terminal width, fallback to generous default for modern terminals."""
+        try:
+            return shutil.get_terminal_size().columns
+        except:
+            return 120
+
+    def supports_colors(self) -> bool:
+        """Check if terminal supports colors - be more permissive for xterm."""
+        term = os.environ.get('TERM', '')
+        return any(term_type in term for term_type in ['xterm', 'color', 'screen'])
+
+    def calculate_summary_length(self, terminal_width: int, override_length: Optional[int] = None) -> int:
+        """Calculate optimal summary length based on terminal width."""
+        if override_length:
+            return override_length
+
+        # Reserve space for: "NN. [X] CIPLAT-NNNN (Nd) [NNpt, username]: ..."
+        # That's roughly 50 chars, so summary gets the rest
+        reserved_space = 50
+        available_space = terminal_width - reserved_space
+
+        # Use at least 80 chars, at most 250 chars
+        if available_space < 80:
+            return 80
+        elif available_space > 250:
+            return 250
+        else:
+            return available_space
+
+    def load_team_config(self, team: str) -> Dict[str, str]:
+        """Load team configuration from config file."""
+        if not self.config_file.exists():
+            raise FileNotFoundError(f"Config file not found: {self.config_file}")
+
+        config = configparser.ConfigParser()
+        config.read(self.config_file)
+
+        if team not in config:
+            available_teams = list(config.sections())
+            raise ValueError(f"Team '{team}' not found. Available teams: {available_teams}")
+
+        team_config = dict(config[team])
+        required_fields = ['backlog_jql']
+
+        for field in required_fields:
+            if field not in team_config:
+                raise ValueError(f"Missing required field '{field}' for team '{team}'")
+
+        return team_config
+
+    def list_teams(self) -> None:
+        """List all available teams from config file."""
+        if not self.config_file.exists():
+            print(f"❌ Config file not found: {self.config_file}")
+            return
+
+        config = configparser.ConfigParser()
+        config.read(self.config_file)
+
+        print("Available teams:")
+        for team in config.sections():
+            display_name = config.get(team, 'display_name', fallback=team)
+            print(f"  {team} - {display_name}")
+
+    def call_jira_api(self, endpoint: str) -> Optional[dict]:
+        """Call jira-api script and return parsed JSON response."""
+        try:
+            cmd = [str(self.jira_api), "GET", endpoint]
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+
+            if result.returncode != 0:
+                print(f"❌ Jira API call failed: {result.stderr}", file=sys.stderr)
+                return None
+
+            return json.loads(result.stdout)
+        except (subprocess.TimeoutExpired, json.JSONDecodeError, Exception) as e:
+            print(f"❌ Error calling Jira API: {e}", file=sys.stderr)
+            return None
+
+    def calculate_days_since_update(self, updated_str: str) -> Tuple[int, str]:
+        """Calculate days since last update and return (days, formatted_string)."""
+        try:
+            # Parse ISO format: 2025-09-26T14:10:21.467-0500
+            # Fix timezone format for Python compatibility
+            if updated_str.count(':') == 2 and ('+' in updated_str[-5:] or '-' in updated_str[-5:]):
+                # Add colon to timezone: -0500 -> -05:00
+                updated_str = updated_str[:-2] + ':' + updated_str[-2:]
+
+            updated_dt = datetime.fromisoformat(updated_str)
+            now = datetime.now(timezone.utc)
+            days_diff = (now - updated_dt.astimezone(timezone.utc)).days
+
+            if days_diff == 0:
+                return days_diff, 'today'
+            elif days_diff == 1:
+                return days_diff, '1d'
+            else:
+                return days_diff, f'{days_diff}d'
+        except Exception:
+            return -1, '?d'
+
+    def format_days_with_color(self, days: int, days_text: str, use_colors: bool) -> str:
+        """Format days with appropriate color coding."""
+        if use_colors:
+            if days < 2:
+                return f'\033[32m({days_text})\033[0m'  # Green < 2 days
+            elif days <= 4:
+                return f'\033[33m({days_text})\033[0m'  # Yellow 2-4 days
+            else:
+                return f'({days_text})'  # Standard (no color) > 4 days
+        else:
+            return f'({days_text})'
+
+    def format_status_indicator(self, status_name: str, use_colors: bool) -> str:
+        """Format status indicator with appropriate colors."""
+        if use_colors:
+            if status_name == 'on Backlog':
+                return '\033[32m[B]\033[0m'  # Green
+            elif status_name == 'Pending Triage':
+                return '\033[33m[T]\033[0m'  # Yellow
+            elif 'Blocked' in status_name or status_name == 'Blocked':
+                return '\033[31m[X]\033[0m'  # Red
+            else:
+                return '[?]'  # Unknown status
+        else:
+            if status_name == 'on Backlog':
+                return '[B]'
+            elif status_name == 'Pending Triage':
+                return '[T]'
+            elif 'Blocked' in status_name or status_name == 'Blocked':
+                return '[X]'
+            else:
+                return '[?]'
+
+    def format_story_points(self, points) -> str:
+        """Format story points as integer if whole number, otherwise float."""
+        if points is None:
+            return "0"
+        try:
+            if float(points) == int(float(points)):
+                return str(int(float(points)))
+            else:
+                return str(points)
+        except (ValueError, TypeError):
+            return "0"
+
+    def get_assignee_name(self, assignee_data) -> str:
+        """Extract username from assignee data, preferring email username."""
+        if not assignee_data:
+            return ""
+
+        email = assignee_data.get('emailAddress', '')
+        if email and '@' in email:
+            return email.split('@')[0]  # LDAP username
+        else:
+            return assignee_data.get('displayName', '')
+
+    def sort_backlog_by_rank(self, issues: List[dict]) -> List[dict]:
+        """Sort issues by Jira rank field (customfield_10022)."""
+        def get_rank_sort_key(issue):
+            fields = issue.get('fields', {})
+            rank = fields.get('customfield_10022', '')
+
+            if rank and '|' in rank and ':' in rank:
+                # Extract rank part after pipe: 'hzzwg1:2'
+                rank_part = rank.split('|')[1]
+                if ':' in rank_part:
+                    prefix, suffix = rank_part.split(':', 1)
+                    # Create sort key that sorts by prefix first, then suffix
+                    # Pad numeric suffixes for proper ordering
+                    suffix_clean = suffix.rstrip(':')
+                    if suffix_clean.isdigit():
+                        padded_suffix = suffix_clean.zfill(10)
+                    else:
+                        padded_suffix = suffix_clean
+                    return (prefix, padded_suffix)
+
+            # Fallback to issue key for consistent ordering
+            issue_key = issue.get('key', 'ZZZZ-9999')
+            issue_num = issue_key.split('-')[-1] if '-' in issue_key else '9999'
+            return ('zzz_fallback', issue_num.zfill(10))
+
+        return sorted(issues, key=get_rank_sort_key)
+
+    def show_backlog(self, backlog_jql: str, count: int, summary_length: int, use_colors: bool) -> None:
+        """Show backlog items separated by triage status."""
+        print(f">> BACKLOG TRIAGE ({count} items)")
+        print("=" * 40)
+
+        if use_colors:
+            print("\033[32m[B]\033[0m on Backlog  \033[33m[T]\033[0m Pending Triage  \033[31m[X]\033[0m Blocked")
+        else:
+            print("[B] on Backlog  [T] Pending Triage  [X] Blocked")
+        print()
+
+        # Query Jira for backlog tickets (include due date)
+        jql_encoded = backlog_jql.replace(' ', '%20')
+        endpoint = f"/search/jql?jql={jql_encoded}&fields=key,summary,priority,created,assignee,customfield_10061,customfield_10022,status,updated,duedate&maxResults=200"
+
+        response = self.call_jira_api(endpoint)
+        if not response:
+            print("❌ Failed to fetch backlog data")
+            return
+
+        issues = response.get('issues', [])
+        if not issues:
+            print("   No backlog items found")
+            return
+
+        # Sort by rank first
+        issues_sorted = self.sort_backlog_by_rank(issues)
+
+        # Separate by status and due dates
+        triage_items = []
+        due_soon_items = []
+        other_items = []
+
+        # Calculate 30 days from now
+        thirty_days_from_now = datetime.now() + timedelta(days=30)
+
+        for issue in issues_sorted:
+            fields = issue.get('fields', {})
+            status_name = fields.get('status', {}).get('name', 'Unknown')
+            due_date_str = fields.get('duedate', '')
+
+            # Check if item has due date in next 30 days
+            has_upcoming_due_date = False
+            if due_date_str:
+                try:
+                    # Due date format is usually YYYY-MM-DD
+                    due_date = datetime.strptime(due_date_str, '%Y-%m-%d')
+                    if due_date <= thirty_days_from_now:
+                        has_upcoming_due_date = True
+                except:
+                    pass
+
+            # Prioritize due dates over triage status
+            if has_upcoming_due_date:
+                due_soon_items.append(issue)
+            elif status_name == 'Pending Triage':
+                triage_items.append(issue)
+            else:
+                other_items.append(issue)
+
+        # Sort due soon items by due date
+        def get_due_date_sort_key(issue):
+            due_date_str = issue.get('fields', {}).get('duedate', '')
+            if due_date_str:
+                try:
+                    return datetime.strptime(due_date_str, '%Y-%m-%d')
+                except:
+                    return datetime.max
+            return datetime.max
+
+        due_soon_items.sort(key=get_due_date_sort_key)
+
+        # Limit to requested count, prioritizing triage items
+        limited_issues = []
+        items_shown = 0
+
+        # Show triage items first
+        if triage_items and items_shown < count:
+            print("PENDING TRIAGE:")
+            for issue in triage_items:
+                if items_shown >= count:
+                    break
+                self.format_and_print_issue(issue, items_shown + 1, summary_length, use_colors)
+                limited_issues.append(issue)
+                items_shown += 1
+            print()
+
+        # Show due soon items second
+        if due_soon_items and items_shown < count:
+            print("DUE SOON (next 30 days):")
+            for issue in due_soon_items:
+                if items_shown >= count:
+                    break
+                self.format_and_print_issue(issue, items_shown + 1, summary_length, use_colors, show_due_date=True)
+                limited_issues.append(issue)
+                items_shown += 1
+            print()
+
+        # Show other items
+        if other_items and items_shown < count:
+            print("OTHER BACKLOG:")
+            for issue in other_items:
+                if items_shown >= count:
+                    break
+                self.format_and_print_issue(issue, items_shown + 1, summary_length, use_colors)
+                limited_issues.append(issue)
+                items_shown += 1
+
+        total_remaining = len(issues_sorted) - items_shown
+        if total_remaining > 0:
+            print(f'   ... and {total_remaining} more items in backlog')
+
+    def format_and_print_issue(self, issue: dict, index: int, summary_length: int, use_colors: bool, show_due_date: bool = False) -> None:
+        """Format and print a single issue line."""
+        fields = issue.get('fields', {})
+        key = issue.get('key', 'N/A')
+
+        # Get basic fields
+        full_summary = fields.get('summary', 'No summary')
+        summary = full_summary[:summary_length]
+        summary_suffix = '...' if len(full_summary) > summary_length else ''
+
+        priority = fields.get('priority', {}).get('name', 'No Priority')
+        status_name = fields.get('status', {}).get('name', 'Unknown')
+        assignee = fields.get('assignee')
+        assignee_name = self.get_assignee_name(assignee)
+
+        story_points = self.format_story_points(fields.get('customfield_10061'))
+
+        # Calculate days since update with colors
+        updated_str = fields.get('updated', '')
+        days, days_text = self.calculate_days_since_update(updated_str)
+        days_part = self.format_days_with_color(days, days_text, use_colors)
+
+        # Status indicator
+        status_indicator = self.format_status_indicator(status_name, use_colors)
+
+        # Due date formatting (if requested)
+        due_date_part = ""
+        if show_due_date:
+            due_date_str = fields.get('duedate', '')
+            if due_date_str:
+                try:
+                    due_date = datetime.strptime(due_date_str, '%Y-%m-%d')
+                    formatted_date = due_date.strftime('%Y-%m-%d')
+                    due_date_part = f'{formatted_date} '
+                except:
+                    due_date_part = '????-??-?? '
+            else:
+                due_date_part = '????-??-?? '
+
+        # Format final line
+        assignee_part = f', {assignee_name}' if assignee_name else ''
+        print(f'{index:2d}. {due_date_part}{status_indicator} {key} {days_part} [{story_points}pt{assignee_part}]: {summary}{summary_suffix} [{priority}]')
+
+    def run(self, args) -> None:
+        """Main backlog cleanup execution."""
+        # Check if jira-api script exists
+        if not self.jira_api.exists() or not os.access(self.jira_api, os.X_OK):
+            print(f"❌ Error: jira-api script not found at {self.jira_api}", file=sys.stderr)
+            sys.exit(1)
+
+        # Handle list teams
+        if args.list_teams:
+            self.list_teams()
+            return
+
+        # Load team configuration
+        try:
+            team_config = self.load_team_config(args.team)
+        except (FileNotFoundError, ValueError) as e:
+            print(f"❌ Error: {e}", file=sys.stderr)
+            print("Available teams:", file=sys.stderr)
+            self.list_teams()
+            sys.exit(1)
+
+        backlog_jql = team_config['backlog_jql']
+        display_name = team_config.get('display_name', args.team)
+
+        # Calculate summary length based on terminal width
+        terminal_width = self.get_terminal_width()
+        calculated_summary_length = self.calculate_summary_length(terminal_width, args.length)
+
+        # Determine if colors should be used
+        use_colors = False
+        if args.color:
+            use_colors = True
+        elif args.no_color:
+            use_colors = False
+        elif self.supports_colors():
+            use_colors = True
+
+        # Display header
+        print(f"{display_name} Backlog Cleanup - {datetime.now().strftime('%Y-%m-%d %H:%M')} [Width: {terminal_width}, Summary: {calculated_summary_length} chars]")
+        print("=" * 50)
+        print()
+
+        # Show backlog
+        self.show_backlog(backlog_jql, args.count, calculated_summary_length, use_colors)
+
+
+def main():
+    parser = argparse.ArgumentParser(description='Backlog cleanup tool showing prioritized backlog items for triage')
+    parser.add_argument('team', nargs='?', default='ciplat', help='Team name from config file (default: ciplat)')
+    parser.add_argument('-t', '--team-name', dest='team', help='Team name (same as positional argument)')
+    parser.add_argument('-n', '--count', type=int, default=100, help='Number of backlog items to show (default: 100)')
+    parser.add_argument('-l', '--length', type=int, help='Summary length in characters (default: auto-detect)')
+    parser.add_argument('-c', '--color', action='store_true', help='Force enable colors (auto-detects by default)')
+    parser.add_argument('--no-color', action='store_true', help='Force disable colors')
+    parser.add_argument('--list-teams', action='store_true', help='Show available teams from config file')
+
+    args = parser.parse_args()
+
+    cleanup = BacklogCleanup()
+    cleanup.run(args)
+
+
+if __name__ == '__main__':
+    main()
