@@ -9,9 +9,10 @@ This repo contains tools I have built to enable me to use AI more easily in my d
 - **confluence-api** - Bash wrapper for Confluence REST API with cross-platform authentication (includes comprehensive usage docs in script)
 - **calendar-link** - Generates Google Calendar event URLs from command line parameters with optional browser integration
 - **gitlab-api** - Bash wrapper for GitLab REST API with keychain authentication
-- **team-dashboard** - Configurable team dashboard showing current sprint status and backlog items (supports multiple teams via config file)
+- **sprint-dashboard** - Configurable team dashboard showing current sprint status and backlog items (supports multiple teams via config file)
+- **backlog-dashboard** - Backlog triage tool showing prioritized backlog items with status indicators and due date tracking
+- **epic-dashboard** - Epic-based project status report showing ticket breakdown and contributor progress
 - **find-current-sprint** - Helper script to find the active sprint name for a given Jira project
-- **project-dashboard** - Epic-based project status report showing ticket breakdown and contributor progress
 - **find-active-epics** - Helper script to find epics with recent activity for a given Jira project
 
 ## API Usage Notes
@@ -109,8 +110,8 @@ calendar-link -t "Project Review" -d "20250927T100000/20250927T110000" \
 calendar-link -t "Conference" -d "20250928/20250929" -l "Austin, TX"
 ```
 
-### Team Dashboard (`team-dashboard`)
-- **Multi-team support**: Configure teams in `team-dashboard.conf` with custom JQL queries
+### Sprint Dashboard (`sprint-dashboard`)
+- **Multi-team support**: Configure teams in `teams.conf` with custom JQL queries
 - **Status tracking**: Shows sprint work categorized by status (TO-DO, IN PROGRESS, IN REVIEW, DONE)
 - **Backlog view**: Ranked backlog items with status indicators ([B]acklog, [T]riage, Bloc[X]ed)
 - **Activity tracking**: Shows days since last update with color coding (green < 2d, yellow 2-4d)
@@ -120,36 +121,59 @@ calendar-link -t "Conference" -d "20250928/20250929" -l "Austin, TX"
 **Examples:**
 ```bash
 # Default CIPLAT dashboard
-team-dashboard
+sprint-dashboard
 
 # CDPLAT team dashboard
-team-dashboard cdplat
+sprint-dashboard cdplat
 
 # Support team dashboards
-team-dashboard ciplat-support
-team-dashboard cdplat-support
+sprint-dashboard ciplat-support
+sprint-dashboard cdplat-support
 
 # With options
-team-dashboard cdplat --count 15 --color --length 100
+sprint-dashboard cdplat --count 15 --color --length 100
 
 # List available teams
-team-dashboard --list-teams
+sprint-dashboard --list-teams
 ```
 
 **Configuration:**
-Edit `team-dashboard.conf` to add new teams:
+Edit `teams.conf` to add new teams:
 ```ini
 [my-team]
 display_name = My Team Name
 sprint_jql = project IN (PROJ1,PROJ2) AND sprint = "My Sprint Name"
-backlog_jql = project IN (PROJ1,PROJ2) AND status IN ('Pending Triage','on Backlog','Blocked')
+backlog_jql = project IN (PROJ1,PROJ2) AND sprint is EMPTY AND statusCategory != Done AND status != Deferred
+```
+
+### Backlog Dashboard (`backlog-dashboard`)
+- **Triage focus**: Shows backlog items prioritized for cleanup sessions
+- **Three sections**: Pending Triage → Due Soon → Other Backlog
+- **Complete backlog**: Fetches all backlog items using proper pagination
+- **Status indicators**: Color-coded status markers with comprehensive legend
+- **Due date awareness**: Highlights items with approaching deadlines
+- **Deferred control**: Optional inclusion of deferred tickets
+
+**Examples:**
+```bash
+# Default backlog triage (excludes deferred)
+backlog-dashboard
+
+# CDPLAT backlog
+backlog-dashboard cdplat
+
+# Include deferred tickets
+backlog-dashboard ciplat --include-deferred
+
+# Show more items
+backlog-dashboard ciplat --count 50
 ```
 
 ### Find Current Sprint (`find-current-sprint`)
 - **Purpose**: Discovers the active sprint name for any Jira project
 - **Usage**: `find-current-sprint PROJECT_KEY`
 - **Output**: Current sprint name (e.g., "CIPLAT 2025-10-07", "CD Platform Sprint 131")
-- **Use case**: Get sprint names to update `team-dashboard.conf` with accurate sprint-based JQL queries
+- **Use case**: Get sprint names to update `sprint-dashboard.conf` with accurate sprint-based JQL queries
 
 **Examples:**
 ```bash
@@ -162,36 +186,44 @@ find-current-sprint ORC       # → "CD Platform Sprint 131"
 echo "sprint_jql = project=CIPLAT AND sprint = \"$(./find-current-sprint CIPLAT)\""
 ```
 
-### Project Dashboard (`project-dashboard`)
+### Epic Dashboard (`epic-dashboard`)
 - **Epic tracking**: Shows all tickets linked to specific epic(s) with status breakdown
-- **Status indicators**: Color-coded status markers ([D]one, [P]rogress, [R]eview, [T]odo, [X]blocked)
+- **Status indicators**: Color-coded status markers ([C]losed, [P]rogress, [R]eview, [T]riage, [B]acklog, [Q]requirements, [D]eferred, [X]blocked)
 - **Activity tracking**: Days since last update with color coding (green < 2d, yellow 2-4d)
+- **Sprint information**: Shows which tickets are actively in sprints vs backlog
 - **Progress metrics**: Per-person creation/resolution stats with story point percentages
 - **Multi-epic support**: Analyze multiple related epics together
+- **Flexible display**: Show/hide completed tickets, filter trivial contributors
 
 **Examples:**
 ```bash
-# Single epic status
-project-dashboard CIPLAT-2148
+# Single epic status (show all)
+epic-dashboard CIPLAT-2148
 
 # Multiple epics
-project-dashboard CIPLAT-2148,CIPLAT-2150
+epic-dashboard CIPLAT-2148,CIPLAT-2150
+
+# Hide completed work for focus
+epic-dashboard CIPLAT-2148 --hide-done
+
+# Filter out minor contributors
+epic-dashboard CIPLAT-2148 --hide-trivial-contributors
 
 # With options
-project-dashboard CIPLAT-2148 --color --length 120
+epic-dashboard CIPLAT-2148 --color --length 120
 ```
 
 **Output Format:**
 - Status breakdown with counts (Done: 5 | To Do: 11 | Blocked: 1)
-- Tickets by status with format: `[S] TICKET-123 (2d) [3pt, user]: Summary...`
-- Progress report showing created/resolved tickets and story point completion % per person
+- Tickets by status with format: `[S] TICKET-123 (2d) [3pt, user] [Sprint=...] [P:priority]: Summary...`
+- Progress report showing created/resolved tickets and story point percentages per person (sorted by completion)
 
 ### Find Active Epics (`find-active-epics`)
 - **Purpose**: Discovers epics with recent activity to identify active projects
 - **Usage**: `find-active-epics PROJECT_KEY [--days N]`
 - **Default timeframe**: 30 days (configurable with `--days`)
 - **Output**: Epic keys, summaries, and days since last update
-- **Use case**: Find which epics to analyze with `project-dashboard`
+- **Use case**: Find which epics to analyze with `epic-dashboard`
 
 **Examples:**
 ```bash
@@ -204,5 +236,5 @@ find-active-epics MARVIN --days 60
 # Use output with project dashboard
 ./find-active-epics CIPLAT --days 60
 # → CIPLAT-2148: Nexus Replacement (Cloudsmith) - Phase 1 (updated 38d ago)
-./project-dashboard CIPLAT-2148
+./epic-dashboard CIPLAT-2148
 ```

@@ -17,7 +17,7 @@ from jira_utils import JiraUtils
 class BacklogCleanup:
     def __init__(self):
         self.script_dir = Path(__file__).parent
-        self.config_file = self.script_dir / "team-dashboard.conf"
+        self.config_file = self.script_dir / "teams.conf"
         self.utils = JiraUtils(self.script_dir)
 
     def show_backlog(self, backlog_jql: str, count: int, summary_length: int, use_colors: bool) -> None:
