@@ -34,6 +34,22 @@ All Atlassian tools (`jira-api`, `jira-export`, `confluence-api`) support:
 - **Sprint**: `customfield_10021` (contains sprint info with start/end dates)
 - **Rank**: `customfield_10022` (controls backlog ordering, format: `0|prefix:suffix`)
 
+**Backlog Sorting (Rank Field):**
+- **Format**: `0|hzzwg1:000i` where `hzzwg1` is prefix, `000i` is suffix
+- **Sorting**: Lexicographic by prefix, then suffix (NOT numeric padding)
+- **Example order**: `000i` → `000r` → `000v` → `001` → `002` → `004` → `00i`
+- **Critical**: Use pure string comparison, don't pad or convert to numbers
+- **Complete backlog required**: Must fetch ALL items before sorting (use pagination)
+
+**Backlog Definition (Best Practice):**
+```bash
+# Better than listing specific statuses
+project IN (PROJ1,PROJ2) AND sprint is EMPTY AND statusCategory != Done AND status != Deferred
+
+# Catches all backlog items regardless of specific status
+# Excludes: items in sprints, completed work, deferred items
+```
+
 **Common JQL Patterns:**
 ```bash
 # Recent activity

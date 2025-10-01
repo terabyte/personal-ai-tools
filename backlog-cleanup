@@ -200,18 +200,14 @@ class BacklogCleanup:
             rank = fields.get('customfield_10022', '')
 
             if rank and '|' in rank and ':' in rank:
-                # Extract rank part after pipe: 'hzzwg1:2'
+                # Extract rank part after pipe: 'hzzwg1:000i'
                 rank_part = rank.split('|')[1]
                 if ':' in rank_part:
                     prefix, suffix = rank_part.split(':', 1)
-                    # Create sort key that sorts by prefix first, then suffix
-                    # Pad numeric suffixes for proper ordering
+                    # For Jira rank ordering, treat as pure string comparison
+                    # Jira's rank values are designed to sort lexicographically
                     suffix_clean = suffix.rstrip(':')
-                    if suffix_clean.isdigit():
-                        padded_suffix = suffix_clean.zfill(10)
-                    else:
-                        padded_suffix = suffix_clean
-                    return (prefix, padded_suffix)
+                    return (prefix, suffix_clean)
 
             # Fallback to issue key for consistent ordering
             issue_key = issue.get('key', 'ZZZZ-9999')
@@ -231,22 +227,42 @@ class BacklogCleanup:
             print("[B] Backlog  [T] Triage  [P] In Progress  [R] In Review  [X] Blocked")
         print()
 
-        # Query Jira for backlog tickets (include due date)
+        # Query Jira for ALL backlog tickets (pagination required for complete backlog)
         jql_encoded = backlog_jql.replace(' ', '%20')
-        endpoint = f"/search/jql?jql={jql_encoded}&fields=key,summary,priority,created,assignee,customfield_10061,customfield_10022,status,updated,duedate&maxResults=200"
+        all_issues = []
+        start_at = 0
+        max_results = 100
 
-        response = self.call_jira_api(endpoint)
-        if not response:
-            print("❌ Failed to fetch backlog data")
-            return
+        while True:
+            endpoint = f"/search/jql?jql={jql_encoded}&fields=key,summary,priority,created,assignee,customfield_10061,customfield_10022,status,updated,duedate&maxResults={max_results}&startAt={start_at}"
 
-        issues = response.get('issues', [])
-        if not issues:
+            response = self.call_jira_api(endpoint)
+            if not response:
+                print("❌ Failed to fetch backlog data")
+                return
+
+            issues = response.get('issues', [])
+            if not issues:
+                break
+
+            all_issues.extend(issues)
+
+            # Check if we got all results
+            total = response.get('total', 0)
+            if start_at + len(issues) >= total:
+                break
+
+            start_at += max_results
+
+        if not all_issues:
             print("   No backlog items found")
             return
 
+        print(f"Fetched {len(all_issues)} total backlog items")
+        print()
+
         # Sort by rank first
-        issues_sorted = self.sort_backlog_by_rank(issues)
+        issues_sorted = self.sort_backlog_by_rank(all_issues)
 
         # Separate by status and due dates
         triage_items = []
