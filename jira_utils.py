@@ -442,7 +442,7 @@ class JiraUtils:
         parser.add_argument('--no-color', action='store_true', help='Force disable colors')
 
         if include_show_all:
-            parser.add_argument('--show-all', action='store_true', help='Show all contributors (default: hide those with <10% in both created and resolved)')
+            parser.add_argument('--hide-trivial-contributors', dest='show_all', action='store_false', help='Hide contributors with <10%% in both created and resolved (default: show all)')
 
         if include_deferred:
             parser.add_argument('--include-deferred', action='store_true', help='Include deferred tickets (default: exclude)')

@@ -366,8 +366,8 @@ class ProjectDashboard:
                 created_points_percent = 0
                 resolved_points_percent = 0
 
-            # Filter out zeros and low contributors (unless --show-all)
-            if not show_all:
+            # Filter out zeros and low contributors (if --hide-trivial-contributors)
+            if not show_all:  # show_all=False means hide trivial contributors
                 # Skip if all zeros
                 if created_count == 0 and resolved_count == 0:
                     continue
@@ -391,7 +391,7 @@ class ProjectDashboard:
         contributor_data.sort(key=lambda x: x['resolved_points_percent'], reverse=True)
 
         if not contributor_data:
-            print("No significant contributors found (use --show-all to see everyone)")
+            print("No significant contributors found (use --hide-trivial-contributors to filter)")
             return
 
         print(f"{'Person':<15} {'Created':<20} {'Resolved':<21} {'Created %':<12} {'Done %':<10}")
@@ -524,7 +524,7 @@ def main():
     parser.add_argument('-l', '--length', type=int, help='Summary length in characters (default: auto-detect)')
     parser.add_argument('-c', '--color', action='store_true', help='Force enable colors (auto-detects by default)')
     parser.add_argument('--no-color', action='store_true', help='Force disable colors')
-    parser.add_argument('--show-all', action='store_true', help='Show all contributors (default: hide those with less than 10 percent in both created and resolved)')
+    parser.add_argument('--hide-trivial-contributors', dest='show_all', action='store_false', help='Hide contributors with less than 10 percent in both created and resolved (default: show all)')
     parser.add_argument('--hide-done', dest='show_done', action='store_false', help='Hide done tickets, show count only (default: show done tickets)')
 
     args = parser.parse_args()
