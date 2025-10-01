@@ -153,20 +153,22 @@ class TeamDashboard:
             'In Progress': 'P',
             'In Review': 'R',
             'Pending Review': 'R',
-            'Done': 'D',
-            'Closed': 'D',
+            'Pending Requirements': 'Q',
+            'Done': 'C',  # Use C for Closed/Done to free up D
+            'Closed': 'C',
+            'Deferred': 'D',  # Use D for Deferred (red)
             'Blocked': 'X'
         }
 
         letter = status_map.get(status_name, '?')
 
         if use_colors:
-            if letter == 'D':
-                return f'\033[32m[{letter}]\033[0m'  # Green for done
-            elif letter in ['P', 'R']:
-                return f'\033[33m[{letter}]\033[0m'  # Yellow for active
-            elif letter == 'X':
-                return f'\033[31m[{letter}]\033[0m'  # Red for blocked
+            if letter == 'C':
+                return f'\033[32m[{letter}]\033[0m'  # Green for closed/done
+            elif letter in ['P', 'R', 'Q']:
+                return f'\033[33m[{letter}]\033[0m'  # Yellow for active/pending
+            elif letter in ['D', 'X']:
+                return f'\033[31m[{letter}]\033[0m'  # Red for deferred/blocked
             elif letter == 'T':
                 return f'\033[33m[{letter}]\033[0m'  # Yellow for triage
             elif letter == 'B':
@@ -372,19 +374,23 @@ class TeamDashboard:
         print("=" * 40)
 
         if use_colors:
-            print("\033[32m[B]\033[0m Backlog  \033[33m[T]\033[0m Triage  \033[33m[P]\033[0m In Progress  \033[33m[R]\033[0m In Review  \033[31m[X]\033[0m Blocked")
+            print("\033[32m[B]\033[0m Backlog  \033[33m[T]\033[0m Triage  \033[33m[P]\033[0m In Progress  \033[33m[R]\033[0m In Review  \033[33m[Q]\033[0m Requirements  \033[31m[D]\033[0m Deferred  \033[31m[X]\033[0m Blocked")
         else:
-            print("[B] Backlog  [T] Triage  [P] In Progress  [R] In Review  [X] Blocked")
+            print("[B] Backlog  [T] Triage  [P] In Progress  [R] In Review  [Q] Requirements  [D] Deferred  [X] Blocked")
         print()
 
-        # Query Jira for ALL backlog tickets (pagination required for complete backlog)
+        # Query Jira for ALL backlog tickets using nextPageToken pagination
         jql_encoded = backlog_jql.replace(' ', '%20')
         all_issues = []
-        start_at = 0
+        next_page_token = None
         max_results = 100
 
         while True:
-            endpoint = f"/search/jql?jql={jql_encoded}&fields=key,summary,priority,created,assignee,customfield_10061,customfield_10022,status,updated,duedate&maxResults={max_results}&startAt={start_at}"
+            # Build endpoint with nextPageToken if we have one
+            if next_page_token:
+                endpoint = f"/search/jql?jql={jql_encoded}&fields=key,summary,priority,created,assignee,customfield_10061,customfield_10022,status,updated,duedate&maxResults={max_results}&nextPageToken={next_page_token}"
+            else:
+                endpoint = f"/search/jql?jql={jql_encoded}&fields=key,summary,priority,created,assignee,customfield_10061,customfield_10022,status,updated,duedate&maxResults={max_results}"
 
             response = self.call_jira_api(endpoint)
             if not response:
@@ -392,17 +398,21 @@ class TeamDashboard:
                 return
 
             issues = response.get('issues', [])
+            next_page_token = response.get('nextPageToken')
+
+            # If no issues returned, we're done
             if not issues:
                 break
 
             all_issues.extend(issues)
 
-            # Check if we got all results
-            total = response.get('total', 0)
-            if start_at + len(issues) >= total:
+            # If no nextPageToken, we're on the last page
+            if not next_page_token:
                 break
 
-            start_at += max_results
+            # Safety limit to prevent runaway queries
+            if len(all_issues) > 1000:
+                break
 
         if not all_issues:
             print("   No backlog items found")

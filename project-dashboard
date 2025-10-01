@@ -112,22 +112,24 @@ class ProjectDashboard:
             'In Progress': 'P',
             'In Review': 'R',
             'Pending Review': 'R',
-            'Done': 'D',
-            'Closed': 'D',
+            'Pending Requirements': 'Q',
+            'Done': 'C',  # Use C for Closed/Done to free up D
+            'Closed': 'C',
+            'Deferred': 'D',  # Use D for Deferred (red)
             'Blocked': 'X'
         }
 
         letter = status_map.get(status_name, '?')
 
         if use_colors:
-            if letter == 'D':
-                return f'\033[32m[{letter}]\033[0m'  # Green for done
-            elif letter in ['P', 'R']:
-                return f'\033[33m[{letter}]\033[0m'  # Yellow for active
-            elif letter == 'X':
-                return f'\033[31m[{letter}]\033[0m'  # Red for blocked
+            if letter == 'C':
+                return f'\033[32m[{letter}]\033[0m'  # Green for closed/done
+            elif letter in ['P', 'R', 'Q']:
+                return f'\033[33m[{letter}]\033[0m'  # Yellow for active/pending
+            elif letter in ['D', 'X']:
+                return f'\033[31m[{letter}]\033[0m'  # Red for deferred/blocked
             elif letter == 'T':
-                return f'\033[33m[{letter}]\033[0m'  # Yellow for todo/triage
+                return f'\033[33m[{letter}]\033[0m'  # Yellow for triage
             elif letter == 'B':
                 return f'\033[32m[{letter}]\033[0m'  # Green for backlog
             else:
@@ -159,7 +161,7 @@ class ProjectDashboard:
             return assignee_data.get('displayName', '')
 
     def get_epic_tickets(self, epic_keys: List[str]) -> List[dict]:
-        """Get all tickets for the given epic(s)."""
+        """Get all tickets for the given epic(s) using proper pagination."""
         # Build JQL for epic tickets
         if len(epic_keys) == 1:
             jql = f'"Epic Link" = {epic_keys[0]}'
@@ -168,13 +170,39 @@ class ProjectDashboard:
             jql = f'"Epic Link" IN ({epic_list})'
 
         jql_encoded = jql.replace(' ', '%20').replace('"', '%22')
-        endpoint = f"/search/jql?jql={jql_encoded}&fields=key,summary,status,assignee,priority,customfield_10061,updated,created,creator,duedate&maxResults=200"
+        all_issues = []
+        next_page_token = None
+        max_results = 100
 
-        response = self.call_jira_api(endpoint)
-        if not response:
-            return []
+        while True:
+            # Build endpoint with nextPageToken if we have one
+            if next_page_token:
+                endpoint = f"/search/jql?jql={jql_encoded}&fields=key,summary,status,assignee,priority,customfield_10061,updated,created,creator,duedate&maxResults={max_results}&nextPageToken={next_page_token}"
+            else:
+                endpoint = f"/search/jql?jql={jql_encoded}&fields=key,summary,status,assignee,priority,customfield_10061,updated,created,creator,duedate&maxResults={max_results}"
 
-        return response.get('issues', [])
+            response = self.call_jira_api(endpoint)
+            if not response:
+                return all_issues
+
+            issues = response.get('issues', [])
+            next_page_token = response.get('nextPageToken')
+
+            # If no issues returned, we're done
+            if not issues:
+                break
+
+            all_issues.extend(issues)
+
+            # If no nextPageToken, we're on the last page
+            if not next_page_token:
+                break
+
+            # Safety limit to prevent runaway queries
+            if len(all_issues) > 500:
+                break
+
+        return all_issues
 
     def categorize_tickets_by_status(self, issues: List[dict], summary_length: int, use_colors: bool) -> Tuple[Dict[str, List[str]], Dict[str, int]]:
         """Categorize tickets by status and return formatted lines plus counts."""
@@ -372,9 +400,9 @@ class ProjectDashboard:
 
         # Show status legend
         if use_colors:
-            print("\033[32m[D]\033[0m Done  \033[33m[P]\033[0m In Progress  \033[33m[R]\033[0m In Review  \033[33m[T]\033[0m Triage  \033[32m[B]\033[0m Backlog  \033[31m[X]\033[0m Blocked")
+            print("\033[32m[C]\033[0m Done  \033[33m[P]\033[0m In Progress  \033[33m[R]\033[0m In Review  \033[33m[T]\033[0m Triage  \033[32m[B]\033[0m Backlog  \033[33m[Q]\033[0m Requirements  \033[31m[D]\033[0m Deferred  \033[31m[X]\033[0m Blocked")
         else:
-            print("[D] Done  [P] In Progress  [R] In Review  [T] Triage  [B] Backlog  [X] Blocked")
+            print("[C] Done  [P] In Progress  [R] In Review  [T] Triage  [B] Backlog  [Q] Requirements  [D] Deferred  [X] Blocked")
         print()
 
         # Get all tickets for the epic(s)
