@@ -126,8 +126,12 @@ class ProjectDashboard:
                 return f'\033[33m[{letter}]\033[0m'  # Yellow for active
             elif letter == 'X':
                 return f'\033[31m[{letter}]\033[0m'  # Red for blocked
+            elif letter == 'T':
+                return f'\033[33m[{letter}]\033[0m'  # Yellow for todo/triage
+            elif letter == 'B':
+                return f'\033[32m[{letter}]\033[0m'  # Green for backlog
             else:
-                return f'[{letter}]'  # Standard for todo/backlog
+                return f'[{letter}]'  # Standard for unknown
         else:
             return f'[{letter}]'
 
@@ -164,7 +168,7 @@ class ProjectDashboard:
             jql = f'"Epic Link" IN ({epic_list})'
 
         jql_encoded = jql.replace(' ', '%20').replace('"', '%22')
-        endpoint = f"/search/jql?jql={jql_encoded}&fields=key,summary,status,assignee,priority,customfield_10061,updated,created,creator&maxResults=200"
+        endpoint = f"/search/jql?jql={jql_encoded}&fields=key,summary,status,assignee,priority,customfield_10061,updated,created,creator,duedate&maxResults=200"
 
         response = self.call_jira_api(endpoint)
         if not response:
@@ -203,9 +207,17 @@ class ProjectDashboard:
             # Status indicator
             status_indicator = self.format_status_indicator(status_name, use_colors)
 
-            # Format ticket line
+            # Format ticket line with priority and optional due date
             assignee_part = f', {assignee_name}' if assignee_name else ''
-            item = f'{status_indicator} {key} {days_part} [{story_points}pt{assignee_part}]: {summary}{summary_suffix}'
+            priority_info = fields.get('priority', {})
+            priority_name = priority_info.get('name', 'No Priority')
+            priority_part = f'[P:{priority_name}]'
+
+            # Check for due date
+            due_date_field = fields.get('duedate', '')
+            due_part = f'[DUE:{due_date_field}] ' if due_date_field else ''
+
+            item = f'{status_indicator} {key} {days_part} [{story_points}pt{assignee_part}] {due_part}{priority_part}: {summary}{summary_suffix}'
 
             # Categorize by status
             if status_category == 'done':
@@ -357,6 +369,12 @@ class ProjectDashboard:
         # Get epic details
         print(f">> PROJECT STATUS: {', '.join(epic_keys)}")
         print("=" * 60)
+
+        # Show status legend
+        if use_colors:
+            print("\033[32m[D]\033[0m Done  \033[33m[P]\033[0m In Progress  \033[33m[R]\033[0m In Review  \033[33m[T]\033[0m Triage  \033[32m[B]\033[0m Backlog  \033[31m[X]\033[0m Blocked")
+        else:
+            print("[D] Done  [P] In Progress  [R] In Review  [T] Triage  [B] Backlog  [X] Blocked")
         print()
 
         # Get all tickets for the epic(s)

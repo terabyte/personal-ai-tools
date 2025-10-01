@@ -145,24 +145,36 @@ class TeamDashboard:
 
     def format_status_indicator(self, status_name: str, use_colors: bool) -> str:
         """Format status indicator with appropriate colors."""
+        # Map status to single letter indicators
+        status_map = {
+            'Pending Triage': 'T',
+            'on Backlog': 'B',
+            'To Do': 'T',
+            'In Progress': 'P',
+            'In Review': 'R',
+            'Pending Review': 'R',
+            'Done': 'D',
+            'Closed': 'D',
+            'Blocked': 'X'
+        }
+
+        letter = status_map.get(status_name, '?')
+
         if use_colors:
-            if status_name == 'on Backlog':
-                return '\033[32m[B]\033[0m'  # Green
-            elif status_name == 'Pending Triage':
-                return '\033[33m[T]\033[0m'  # Yellow
-            elif 'Blocked' in status_name or status_name == 'Blocked':
-                return '\033[31m[X]\033[0m'  # Red
+            if letter == 'D':
+                return f'\033[32m[{letter}]\033[0m'  # Green for done
+            elif letter in ['P', 'R']:
+                return f'\033[33m[{letter}]\033[0m'  # Yellow for active
+            elif letter == 'X':
+                return f'\033[31m[{letter}]\033[0m'  # Red for blocked
+            elif letter == 'T':
+                return f'\033[33m[{letter}]\033[0m'  # Yellow for triage
+            elif letter == 'B':
+                return f'\033[32m[{letter}]\033[0m'  # Green for backlog
             else:
-                return '[?]'  # Unknown status
+                return f'[{letter}]'  # Standard for unknown
         else:
-            if status_name == 'on Backlog':
-                return '[B]'
-            elif status_name == 'Pending Triage':
-                return '[T]'
-            elif 'Blocked' in status_name or status_name == 'Blocked':
-                return '[X]'
-            else:
-                return '[?]'
+            return f'[{letter}]'
 
     def format_story_points(self, points) -> str:
         """Format story points as integer if whole number, otherwise float."""
@@ -263,9 +275,17 @@ class TeamDashboard:
             else:
                 asterisk = ' '  # Space to maintain alignment
 
-            # Format ticket line
+            # Format ticket line with priority and optional due date
             assignee_part = f', {assignee_name}' if assignee_name else ''
-            item = f'{asterisk} {key} {days_part} [{story_points}pt{assignee_part}]: {summary}{summary_suffix}'
+            priority_info = fields.get('priority', {})
+            priority_name = priority_info.get('name', 'No Priority')
+            priority_part = f'[P:{priority_name}]'
+
+            # Check for due date
+            due_date_field = fields.get('duedate', '')
+            due_part = f'[DUE:{due_date_field}] ' if due_date_field else ''
+
+            item = f'{asterisk} {key} {days_part} [{story_points}pt{assignee_part}] {due_part}{priority_part}: {summary}{summary_suffix}'
 
             # Categorize by status
             if 'blocked' in status_name.lower():
@@ -295,9 +315,9 @@ class TeamDashboard:
         print("=" * 60)
         print()
 
-        # Query Jira for sprint tickets (include created date and sprint info)
+        # Query Jira for sprint tickets (include created date, sprint info, and due date)
         jql_encoded = sprint_jql.replace(' ', '%20')
-        endpoint = f"/search/jql?jql={jql_encoded}&fields=key,summary,status,assignee,priority,customfield_10061,updated,created,customfield_10021&maxResults=50"
+        endpoint = f"/search/jql?jql={jql_encoded}&fields=key,summary,status,assignee,priority,customfield_10061,updated,created,customfield_10021,duedate&maxResults=50"
 
         response = self.call_jira_api(endpoint)
         if not response:
@@ -356,14 +376,14 @@ class TeamDashboard:
         print("=" * 40)
 
         if use_colors:
-            print("\033[32m[B]\033[0m on Backlog  \033[33m[T]\033[0m Pending Triage  \033[31m[X]\033[0m Blocked")
+            print("\033[32m[B]\033[0m Backlog  \033[33m[T]\033[0m Triage  \033[33m[P]\033[0m In Progress  \033[33m[R]\033[0m In Review  \033[31m[X]\033[0m Blocked")
         else:
-            print("[B] on Backlog  [T] Pending Triage  [X] Blocked")
+            print("[B] Backlog  [T] Triage  [P] In Progress  [R] In Review  [X] Blocked")
         print()
 
-        # Query Jira for backlog tickets
+        # Query Jira for backlog tickets (include due date)
         jql_encoded = backlog_jql.replace(' ', '%20')
-        endpoint = f"/search/jql?jql={jql_encoded}&fields=key,summary,priority,created,assignee,customfield_10061,customfield_10022,status,updated&maxResults=100"
+        endpoint = f"/search/jql?jql={jql_encoded}&fields=key,summary,priority,created,assignee,customfield_10061,customfield_10022,status,updated,duedate&maxResults=100"
 
         response = self.call_jira_api(endpoint)
         if not response:
@@ -403,9 +423,15 @@ class TeamDashboard:
             # Status indicator
             status_indicator = self.format_status_indicator(status_name, use_colors)
 
-            # Format final line
+            # Format final line with priority and optional due date
             assignee_part = f', {assignee_name}' if assignee_name else ''
-            print(f'{i:2d}. {status_indicator} {key} {days_part} [{story_points}pt{assignee_part}]: {summary}{summary_suffix} [{priority}]')
+            priority_part = f'[P:{priority}]'
+
+            # Check for due date
+            due_date_field = fields.get('duedate', '')
+            due_part = f'[DUE:{due_date_field}] ' if due_date_field else ''
+
+            print(f'{i:2d}. {status_indicator} {key} {days_part} [{story_points}pt{assignee_part}] {due_part}{priority_part}: {summary}{summary_suffix}')
 
         if len(issues_sorted) > count:
             print(f'   ... and {len(issues_sorted) - count} more items in backlog')
