@@ -17,11 +17,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+from jira_utils import JiraUtils
+
 
 class ProjectDashboard:
     def __init__(self):
         self.script_dir = Path(__file__).parent
-        self.jira_api = self.script_dir / "jira-api"
+        self.utils = JiraUtils(self.script_dir)
 
     def get_terminal_width(self) -> int:
         """Get terminal width, fallback to generous default for modern terminals."""
@@ -181,7 +183,7 @@ class ProjectDashboard:
             else:
                 endpoint = f"/search/jql?jql={jql_encoded}&fields=key,summary,status,assignee,priority,customfield_10061,updated,created,creator,duedate,customfield_10021&maxResults={max_results}"
 
-            response = self.call_jira_api(endpoint)
+            response = self.utils.call_jira_api(endpoint)
             if not response:
                 return all_issues
 
@@ -482,8 +484,8 @@ class ProjectDashboard:
     def run(self, args) -> None:
         """Main dashboard execution."""
         # Check if jira-api script exists
-        if not self.jira_api.exists() or not os.access(self.jira_api, os.X_OK):
-            print(f"❌ Error: jira-api script not found at {self.jira_api}", file=sys.stderr)
+        if not self.utils.jira_api.exists() or not os.access(self.utils.jira_api, os.X_OK):
+            print(f"❌ Error: jira-api script not found at {self.utils.jira_api}", file=sys.stderr)
             sys.exit(1)
 
         # Parse epic keys
@@ -498,17 +500,11 @@ class ProjectDashboard:
             sys.exit(1)
 
         # Calculate summary length based on terminal width
-        terminal_width = self.get_terminal_width()
-        calculated_summary_length = self.calculate_summary_length(terminal_width, args.length)
+        terminal_width = self.utils.get_terminal_width()
+        calculated_summary_length = self.utils.calculate_summary_length(terminal_width, args.length)
 
         # Determine if colors should be used
-        use_colors = False
-        if args.color:
-            use_colors = True
-        elif args.no_color:
-            use_colors = False
-        elif self.supports_colors():
-            use_colors = True
+        use_colors = self.utils.determine_colors(args)
 
         # Display header
         epic_display = ', '.join(epic_keys)
@@ -523,10 +519,12 @@ class ProjectDashboard:
 def main():
     parser = argparse.ArgumentParser(description='Project dashboard showing epic status and contributor progress')
     parser.add_argument('epics', nargs='+', help='Epic key(s) - e.g., CIPLAT-1234 or CIPLAT-1234,CIPLAT-5678')
+
+    # Add standard arguments manually since project-dashboard has different needs
     parser.add_argument('-l', '--length', type=int, help='Summary length in characters (default: auto-detect)')
     parser.add_argument('-c', '--color', action='store_true', help='Force enable colors (auto-detects by default)')
     parser.add_argument('--no-color', action='store_true', help='Force disable colors')
-    parser.add_argument('--show-all', action='store_true', help='Show all contributors (default: hide those with <10% in both created and resolved)')
+    parser.add_argument('--show-all', action='store_true', help='Show all contributors (default: hide those with less than 10 percent in both created and resolved)')
     parser.add_argument('--hide-done', dest='show_done', action='store_false', help='Hide done tickets, show count only (default: show done tickets)')
 
     args = parser.parse_args()

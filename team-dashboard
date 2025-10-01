@@ -17,12 +17,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+from jira_utils import JiraUtils
+
 
 class TeamDashboard:
     def __init__(self):
         self.script_dir = Path(__file__).parent
-        self.jira_api = self.script_dir / "jira-api"
         self.config_file = self.script_dir / "team-dashboard.conf"
+        self.utils = JiraUtils(self.script_dir)
 
     def get_terminal_width(self) -> int:
         """Get terminal width, fallback to generous default for modern terminals."""
@@ -321,7 +323,7 @@ class TeamDashboard:
         jql_encoded = sprint_jql.replace(' ', '%20')
         endpoint = f"/search/jql?jql={jql_encoded}&fields=key,summary,status,assignee,priority,customfield_10061,updated,created,customfield_10021,duedate&maxResults=50"
 
-        response = self.call_jira_api(endpoint)
+        response = self.utils.call_jira_api(endpoint)
         if not response:
             print("❌ Failed to fetch sprint data")
             return
@@ -392,7 +394,7 @@ class TeamDashboard:
             else:
                 endpoint = f"/search/jql?jql={jql_encoded}&fields=key,summary,priority,created,assignee,customfield_10061,customfield_10022,status,updated,duedate&maxResults={max_results}"
 
-            response = self.call_jira_api(endpoint)
+            response = self.utils.call_jira_api(endpoint)
             if not response:
                 print("❌ Failed to fetch backlog data")
                 return
@@ -462,41 +464,41 @@ class TeamDashboard:
     def run(self, args) -> None:
         """Main dashboard execution."""
         # Check if jira-api script exists
-        if not self.jira_api.exists() or not os.access(self.jira_api, os.X_OK):
-            print(f"❌ Error: jira-api script not found at {self.jira_api}", file=sys.stderr)
+        if not self.utils.jira_api.exists() or not os.access(self.utils.jira_api, os.X_OK):
+            print(f"❌ Error: jira-api script not found at {self.utils.jira_api}", file=sys.stderr)
             sys.exit(1)
 
         # Handle list teams
         if args.list_teams:
-            self.list_teams()
+            self.utils.list_teams(self.config_file)
             return
 
         # Load team configuration
         try:
-            team_config = self.load_team_config(args.team)
+            team_config = self.utils.load_team_config(args.team, self.config_file)
         except (FileNotFoundError, ValueError) as e:
             print(f"❌ Error: {e}", file=sys.stderr)
-            if hasattr(self, 'list_teams'):
-                print("Available teams:", file=sys.stderr)
-                self.list_teams()
+            print("Available teams:", file=sys.stderr)
+            self.utils.list_teams(self.config_file)
             sys.exit(1)
 
         sprint_jql = team_config['sprint_jql']
         backlog_jql = team_config['backlog_jql']
         display_name = team_config['display_name']
 
+        # Modify JQL to include or exclude deferred tickets
+        if hasattr(args, 'include_deferred') and args.include_deferred:
+            backlog_jql = backlog_jql.replace(' AND status != Deferred', '')
+        else:
+            if 'status != Deferred' not in backlog_jql:
+                backlog_jql += ' AND status != Deferred'
+
         # Calculate summary length based on terminal width
-        terminal_width = self.get_terminal_width()
-        calculated_summary_length = self.calculate_summary_length(terminal_width, args.length)
+        terminal_width = self.utils.get_terminal_width()
+        calculated_summary_length = self.utils.calculate_summary_length(terminal_width, args.length)
 
         # Determine if colors should be used
-        use_colors = False
-        if args.color:
-            use_colors = True
-        elif args.no_color:
-            use_colors = False
-        elif self.supports_colors():
-            use_colors = True
+        use_colors = self.utils.determine_colors(args)
 
         # Display header
         print(f"{display_name} Dashboard - {datetime.now().strftime('%Y-%m-%d %H:%M')} [Width: {terminal_width}, Summary: {calculated_summary_length} chars]")
@@ -513,14 +515,14 @@ class TeamDashboard:
 
 def main():
     parser = argparse.ArgumentParser(description='Team dashboard showing current sprint and backlog')
-    parser.add_argument('team', nargs='?', default='ciplat', help='Team name from config file (default: ciplat)')
-    parser.add_argument('-t', '--team-name', dest='team', help='Team name (same as positional argument)')
+
+    # Add standard arguments
+    utils = JiraUtils()
+    utils.add_common_arguments(parser, include_team=True, include_count=True,
+                              default_count=10, include_deferred=True)
+
+    # Add team-dashboard specific arguments
     parser.add_argument('-s', '--sprint', help='Specify sprint name (default: auto-detect current sprint)')
-    parser.add_argument('-n', '--count', type=int, default=10, help='Number of backlog items to show (default: 10)')
-    parser.add_argument('-l', '--length', type=int, help='Summary length in characters (default: auto-detect)')
-    parser.add_argument('-c', '--color', action='store_true', help='Force enable colors (auto-detects by default)')
-    parser.add_argument('--no-color', action='store_true', help='Force disable colors')
-    parser.add_argument('--list-teams', action='store_true', help='Show available teams from config file')
 
     args = parser.parse_args()
 
