@@ -438,6 +438,15 @@ class BacklogCleanup:
         backlog_jql = team_config['backlog_jql']
         display_name = team_config.get('display_name', args.team)
 
+        # Modify JQL to include or exclude deferred tickets
+        if args.include_deferred:
+            # Remove the "status != Deferred" filter if present
+            backlog_jql = backlog_jql.replace(' AND status != Deferred', '')
+        else:
+            # Ensure deferred tickets are excluded (add filter if not present)
+            if 'status != Deferred' not in backlog_jql:
+                backlog_jql += ' AND status != Deferred'
+
         # Calculate summary length based on terminal width
         terminal_width = self.get_terminal_width()
         calculated_summary_length = self.calculate_summary_length(terminal_width, args.length)
@@ -468,6 +477,7 @@ def main():
     parser.add_argument('-l', '--length', type=int, help='Summary length in characters (default: auto-detect)')
     parser.add_argument('-c', '--color', action='store_true', help='Force enable colors (auto-detects by default)')
     parser.add_argument('--no-color', action='store_true', help='Force disable colors')
+    parser.add_argument('--include-deferred', action='store_true', help='Include deferred tickets in backlog (default: exclude)')
     parser.add_argument('--list-teams', action='store_true', help='Show available teams from config file')
 
     args = parser.parse_args()
