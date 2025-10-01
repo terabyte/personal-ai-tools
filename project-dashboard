@@ -177,9 +177,9 @@ class ProjectDashboard:
         while True:
             # Build endpoint with nextPageToken if we have one
             if next_page_token:
-                endpoint = f"/search/jql?jql={jql_encoded}&fields=key,summary,status,assignee,priority,customfield_10061,updated,created,creator,duedate&maxResults={max_results}&nextPageToken={next_page_token}"
+                endpoint = f"/search/jql?jql={jql_encoded}&fields=key,summary,status,assignee,priority,customfield_10061,updated,created,creator,duedate,customfield_10021&maxResults={max_results}&nextPageToken={next_page_token}"
             else:
-                endpoint = f"/search/jql?jql={jql_encoded}&fields=key,summary,status,assignee,priority,customfield_10061,updated,created,creator,duedate&maxResults={max_results}"
+                endpoint = f"/search/jql?jql={jql_encoded}&fields=key,summary,status,assignee,priority,customfield_10061,updated,created,creator,duedate,customfield_10021&maxResults={max_results}"
 
             response = self.call_jira_api(endpoint)
             if not response:
@@ -235,7 +235,7 @@ class ProjectDashboard:
             # Status indicator
             status_indicator = self.format_status_indicator(status_name, use_colors)
 
-            # Format ticket line with priority and optional due date
+            # Format ticket line with priority, optional due date, and sprint info
             assignee_part = f', {assignee_name}' if assignee_name else ''
             priority_info = fields.get('priority', {})
             priority_name = priority_info.get('name', 'No Priority')
@@ -245,7 +245,19 @@ class ProjectDashboard:
             due_date_field = fields.get('duedate', '')
             due_part = f'[DUE:{due_date_field}] ' if due_date_field else ''
 
-            item = f'{status_indicator} {key} {days_part} [{story_points}pt{assignee_part}] {due_part}{priority_part}: {summary}{summary_suffix}'
+            # Check for sprint info (omit for done tickets)
+            sprint_part = ''
+            if status_category != 'done':
+                sprints = fields.get('customfield_10021', [])
+                if sprints:
+                    for sprint in sprints:
+                        if sprint.get('state') == 'active':
+                            sprint_name = sprint.get('name', '')
+                            if sprint_name:
+                                sprint_part = f'[Sprint={sprint_name}] '
+                                break
+
+            item = f'{status_indicator} {key} {days_part} [{story_points}pt{assignee_part}] {sprint_part}{due_part}{priority_part}: {summary}{summary_suffix}'
 
             # Categorize by status
             if status_category == 'done':
@@ -392,7 +404,7 @@ class ProjectDashboard:
 
             print(f"{data['person']:<15} {created_display:<20} {resolved_display:<21} {created_percent_str:<12} {resolved_percent_str:<10}")
 
-    def show_project_status(self, epic_keys: List[str], summary_length: int, use_colors: bool, show_all: bool = False) -> None:
+    def show_project_status(self, epic_keys: List[str], summary_length: int, use_colors: bool, show_all: bool = False, show_done: bool = True) -> None:
         """Show project status for the given epic(s)."""
         # Get epic details
         print(f">> PROJECT STATUS: {', '.join(epic_keys)}")
@@ -437,7 +449,7 @@ class ProjectDashboard:
             print(" | ".join(parts))
         print()
 
-        # Display sections (skip done, just show count above)
+        # Display sections
         for section_name, section_key in [
             ('BLOCKED:', 'blocked'),
             ('TO-DO:', 'todo'),
@@ -450,6 +462,18 @@ class ProjectDashboard:
                 print(section_name)
                 for item in items:
                     print(f'   {item}')
+                print()
+
+        # Show done section based on flag
+        if categories.get('done', []):
+            if show_done:
+                print("DONE:")
+                for item in categories['done']:
+                    print(f'   {item}')
+                print()
+            else:
+                done_count = status_counts.get('done', 0)
+                print(f"DONE: {done_count} tickets (use --show-done to see details)")
                 print()
 
         print()
@@ -493,7 +517,7 @@ class ProjectDashboard:
         print()
 
         # Show project status
-        self.show_project_status(epic_keys, calculated_summary_length, use_colors, args.show_all)
+        self.show_project_status(epic_keys, calculated_summary_length, use_colors, args.show_all, args.show_done)
 
 
 def main():
@@ -503,6 +527,7 @@ def main():
     parser.add_argument('-c', '--color', action='store_true', help='Force enable colors (auto-detects by default)')
     parser.add_argument('--no-color', action='store_true', help='Force disable colors')
     parser.add_argument('--show-all', action='store_true', help='Show all contributors (default: hide those with <10% in both created and resolved)')
+    parser.add_argument('--hide-done', dest='show_done', action='store_false', help='Hide done tickets, show count only (default: show done tickets)')
 
     args = parser.parse_args()
 
