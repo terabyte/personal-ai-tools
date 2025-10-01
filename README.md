@@ -9,6 +9,7 @@ This repo contains tools I have built to enable me to use AI more easily in my d
 - **confluence-api** - Bash wrapper for Confluence REST API with cross-platform authentication (includes comprehensive usage docs in script)
 - **calendar-link** - Generates Google Calendar event URLs from command line parameters with optional browser integration
 - **gitlab-api** - Bash wrapper for GitLab REST API with keychain authentication
+- **pagerduty-api** - Bash wrapper for PagerDuty REST API with cross-platform authentication
 - **sprint-dashboard** - Configurable team dashboard showing current sprint status and backlog items (supports multiple teams via config file)
 - **backlog-dashboard** - Backlog triage tool showing prioritized backlog items with status indicators and due date tracking
 - **epic-dashboard** - Epic-based project status report showing ticket breakdown and contributor progress
@@ -18,6 +19,34 @@ This repo contains tools I have built to enable me to use AI more easily in my d
 ## API Usage Notes
 
 ### Authentication
+### PagerDuty API (`pagerduty-api`)
+- **Token-based auth**: Uses PagerDuty API tokens with `Authorization: Token token=...` header
+- **API v2**: Uses PagerDuty REST API v2 with proper Accept headers
+- **Cross-platform**: Token file, environment variable, or keychain support
+
+**Token Setup:**
+1. Visit: https://indeed.pagerduty.com/api_keys
+2. Create new API key with description "Personal CLI Tools"
+3. Store in `~/.pagerduty-token` file or `PAGERDUTY_TOKEN` environment variable
+
+**Common Examples:**
+```bash
+# List incidents
+pagerduty-api GET /incidents
+
+# Get triggered incidents only
+pagerduty-api GET "/incidents?statuses%5B%5D=triggered"
+
+# List services
+pagerduty-api GET /services
+
+# Current on-call for schedule
+pagerduty-api GET "/oncalls?schedule_ids%5B%5D=SCHEDULE_ID"
+
+# List users
+pagerduty-api GET /users
+```
+
 All Atlassian tools (`jira-api`, `jira-export`, `confluence-api`) support:
 1. **Token file**: `~/.atlassian-mcp-token` (preferred for Linux/cross-platform)
 2. **Environment variables**: `JIRA_TOKEN`, `CONFLUENCE_TOKEN`
