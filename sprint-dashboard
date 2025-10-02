@@ -312,39 +312,96 @@ class TeamDashboard:
         # Extract sprint name from JQL
         sprint_name = self.extract_sprint_name_from_jql(sprint_jql)
         if sprint_name:
-            print(f">> CURRENT SPRINT: {sprint_name}")
+            sprint_header = f">> CURRENT SPRINT: {sprint_name}"
         else:
-            print(">> CURRENT SPRINT: (from JQL query)")
+            sprint_header = ">> CURRENT SPRINT: (from JQL query)"
 
         print("=" * 60)
         print()
 
-        # Query Jira for sprint tickets (include created date, sprint info, and due date)
-        jql_encoded = sprint_jql.replace(' ', '%20')
-        endpoint = f"/search/jql?jql={jql_encoded}&fields=key,summary,status,assignee,priority,customfield_10061,updated,created,customfield_10021,duedate&maxResults=50"
+        # Fetch all sprint tickets with proper pagination
+        fields = ['key', 'summary', 'status', 'assignee', 'priority', 'customfield_10061',
+                 'updated', 'created', 'customfield_10021', 'duedate']
+        issues = self.utils.fetch_all_jql_results(sprint_jql, fields, max_items=200)
 
-        response = self.utils.call_jira_api(endpoint)
-        if not response:
-            print("❌ Failed to fetch sprint data")
+        if not issues:
+            print(f"{sprint_header} (0 tickets)")
+            print("=" * 60)
+            print("No tickets found in sprint")
             return
 
-        issues = response.get('issues', [])
-        categories = self.categorize_tickets_by_status(issues, summary_length, use_colors)
+        # Categorize tickets with sprint-specific grouping
+        from collections import defaultdict
+        categories = defaultdict(list)
+        status_counts = defaultdict(int)
 
-        # Display sections
+        for issue in issues:
+            fields = issue.get('fields', {})
+            status_info = fields.get('status', {})
+            status_name = status_info.get('name', 'Unknown')
+            status_category = status_info.get('statusCategory', {}).get('key', '')
+
+            # Sprint-specific categorization with separate verification category
+            if status_name in ['In Review', 'Pending Review', 'Pending Verification', 'Pending Closure', 'Pending Deploy', 'Pending Merge']:
+                categories['verification'].append(issue)
+                status_counts['verification'] += 1
+            elif status_category == 'done' or status_name == 'Abandoned':
+                categories['done'].append(issue)
+                status_counts['done'] += 1
+            elif 'blocked' in status_name.lower():
+                categories['blocked'].append(issue)
+                status_counts['blocked'] += 1
+            elif status_name in ['In Progress']:
+                categories['in_progress'].append(issue)
+                status_counts['in_progress'] += 1
+            else:
+                # Everything else goes to TO-DO
+                categories['todo'].append(issue)
+                status_counts['todo'] += 1
+
+        categories = dict(categories)
+        status_counts = dict(status_counts)
+
+        # Show header with total count
+        total_tickets = len(issues)
+        print(f"{sprint_header} ({total_tickets} tickets)")
+        print("=" * 60)
+        print()
+
+        # Sort all tickets by most recently updated within each category
+        def sort_by_updated(tickets):
+            def get_updated_sort_key(ticket):
+                fields = ticket.get('fields', {})
+                updated_str = fields.get('updated', '')
+                try:
+                    if updated_str.count(':') == 2 and ('+' in updated_str[-5:] or '-' in updated_str[-5:]):
+                        updated_str = updated_str[:-2] + ':' + updated_str[-2:]
+                    updated_dt = datetime.fromisoformat(updated_str)
+                    return updated_dt
+                except:
+                    return datetime.min.replace(tzinfo=timezone.utc)
+            return sorted(tickets, key=get_updated_sort_key, reverse=True)
+
+        # Display sections with counts and all tickets
         for section_name, section_key in [
-            ('BLOCKED:', 'blocked'),
-            ('TO-DO:', 'todo'),
-            ('IN PROGRESS:', 'in_progress'),
-            ('IN REVIEW:', 'in_review'),
-            ('RECENTLY DONE:', 'done')
+            ('BLOCKED', 'blocked'),
+            ('TO-DO', 'todo'),
+            ('IN PROGRESS', 'in_progress'),
+            ('VERIFICATION', 'verification'),
+            ('DONE', 'done')
         ]:
-            items = categories[section_key]
-            if items:
-                print(section_name)
-                limit = 3 if section_key == 'done' else 5
-                for item in items[:limit]:
-                    print(f'   {item}')
+            ticket_list = categories.get(section_key, [])
+            count = status_counts.get(section_key, 0)
+
+            if ticket_list:
+                print(f"{section_name} ({count}):")
+                # Sort by most recently updated and format all tickets
+                sorted_tickets = sort_by_updated(ticket_list)
+                for i, ticket in enumerate(sorted_tickets, 1):
+                    # Use shared formatting function with status indicator
+                    line = self.utils.format_ticket_line(ticket, i, summary_length, use_colors,
+                                                       show_status=True, show_asterisk=True)
+                    print(f'   {line}')
                 print()
 
     def sort_backlog_by_rank(self, issues: List[dict]) -> List[dict]:
@@ -375,10 +432,7 @@ class TeamDashboard:
         print(f">> TOP BACKLOG (Next {count} items)")
         print("=" * 40)
 
-        if use_colors:
-            print("\033[32m[B]\033[0m Backlog  \033[33m[T]\033[0m Triage  \033[33m[P]\033[0m In Progress  \033[33m[R]\033[0m In Review  \033[33m[Q]\033[0m Requirements  \033[31m[D]\033[0m Deferred  \033[31m[X]\033[0m Blocked")
-        else:
-            print("[B] Backlog  [T] Triage  [P] In Progress  [R] In Review  [Q] Requirements  [D] Deferred  [X] Blocked")
+        self.utils.print_status_legend(use_colors, 'backlog')
         print()
 
         # Query Jira for ALL backlog tickets using nextPageToken pagination
@@ -425,38 +479,9 @@ class TeamDashboard:
         limited_issues = issues_sorted[:count]
 
         for i, issue in enumerate(limited_issues, 1):
-            fields = issue.get('fields', {})
-            key = issue.get('key', 'N/A')
-
-            # Get basic fields
-            full_summary = fields.get('summary', 'No summary')
-            summary = full_summary[:summary_length]
-            summary_suffix = '...' if len(full_summary) > summary_length else ''
-
-            priority = fields.get('priority', {}).get('name', 'No Priority')
-            status_name = fields.get('status', {}).get('name', 'Unknown')
-            assignee = fields.get('assignee')
-            assignee_name = self.get_assignee_name(assignee)
-
-            story_points = self.format_story_points(fields.get('customfield_10061'))
-
-            # Calculate days since update with colors
-            updated_str = fields.get('updated', '')
-            days, days_text = self.calculate_days_since_update(updated_str)
-            days_part = self.format_days_with_color(days, days_text, use_colors)
-
-            # Status indicator
-            status_indicator = self.format_status_indicator(status_name, use_colors)
-
-            # Format final line with priority and optional due date
-            assignee_part = f', {assignee_name}' if assignee_name else ''
-            priority_part = f'[P:{priority}]'
-
-            # Check for due date
-            due_date_field = fields.get('duedate', '')
-            due_part = f'[DUE:{due_date_field}] ' if due_date_field else ''
-
-            print(f'{i:2d}. {status_indicator} {key} {days_part} [{story_points}pt{assignee_part}] {due_part}{priority_part}: {summary}{summary_suffix}')
+            # Use shared formatting function
+            line = self.utils.format_ticket_line(issue, i, summary_length, use_colors, show_status=True)
+            print(f' {line}')
 
         if len(issues_sorted) > count:
             print(f'   ... and {len(issues_sorted) - count} more items in backlog')
@@ -482,9 +507,44 @@ class TeamDashboard:
             self.utils.list_teams(self.config_file)
             sys.exit(1)
 
-        sprint_jql = team_config['sprint_jql']
-        backlog_jql = team_config['backlog_jql']
+        # Build sprint JQL from projects and sprint name
+        projects = team_config.get('projects', '')
         display_name = team_config['display_name']
+
+        if not projects:
+            print(f"❌ Error: Team '{args.team}' missing 'projects' field in config", file=sys.stderr)
+            sys.exit(1)
+
+        # Determine sprint name (command line override > config > auto-detect)
+        sprint_name = None
+        if hasattr(args, 'sprint') and args.sprint:
+            # Command line override
+            sprint_name = args.sprint
+        elif team_config.get('sprint_name'):
+            # Configured sprint name
+            sprint_name = team_config['sprint_name']
+        else:
+            # Auto-detect using find-current-sprint
+            first_project = projects.split(',')[0].strip()
+            try:
+                find_sprint_cmd = [str(self.script_dir / "find-current-sprint"), first_project]
+                result = subprocess.run(find_sprint_cmd, capture_output=True, text=True, timeout=10)
+                if result.returncode == 0:
+                    sprint_name = result.stdout.strip()
+                else:
+                    sprint_name = f"{first_project} Current Sprint"
+            except Exception:
+                sprint_name = f"{first_project} Current Sprint"
+
+        # Build sprint JQL
+        sprint_jql = f'project IN ({projects}) AND sprint = "{sprint_name}"'
+
+        # Build backlog JQL from projects or use configured backlog_jql
+        if team_config.get('backlog_jql'):
+            backlog_jql = team_config['backlog_jql']
+        else:
+            # Use default project-based backlog query
+            backlog_jql = f'project IN ({projects}) AND sprint is EMPTY AND statusCategory != Done AND type not in (Deploy, Request)'
 
         # Modify JQL to include or exclude deferred tickets
         if hasattr(args, 'include_deferred') and args.include_deferred:

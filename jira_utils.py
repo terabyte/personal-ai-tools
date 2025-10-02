@@ -146,9 +146,16 @@ class JiraUtils:
             'In Review': 'R',
             'Pending Review': 'R',
             'Pending Requirements': 'Q',
+            'Pending Verification': 'V',
+            'Pending Closure': 'Z',
+            'Pending Deploy': 'W',
+            'Pending Merge': 'M',
+            'Accepted': 'A',
+            'Scheduled': 'S',
             'Done': 'C',  # Use C for Closed/Done to free up D
             'Closed': 'C',
             'Deferred': 'D',  # Use D for Deferred (red)
+            'Abandoned': '_',  # Use _ for Abandoned (red)
             'Blocked': 'X'
         }
         return status_map.get(status_name, '?')
@@ -158,16 +165,16 @@ class JiraUtils:
         letter = self.get_status_letter(status_name)
 
         if use_colors:
-            if letter == 'C':
-                return f'\033[32m[{letter}]\033[0m'  # Green for closed/done
+            if letter in ['C', 'V', 'Z', 'W', 'M']:
+                return f'\033[32m[{letter}]\033[0m'  # Green for closed/done/verification/closure/deploy/merge
+            elif letter in ['A', 'B', 'S']:
+                return f'\033[34m[{letter}]\033[0m'  # Blue for accepted/backlog/scheduled
             elif letter in ['P', 'R', 'Q']:
                 return f'\033[33m[{letter}]\033[0m'  # Yellow for active/pending
-            elif letter in ['D', 'X']:
-                return f'\033[31m[{letter}]\033[0m'  # Red for deferred/blocked
+            elif letter in ['D', 'X', '_']:
+                return f'\033[31m[{letter}]\033[0m'  # Red for deferred/blocked/abandoned
             elif letter == 'T':
                 return f'\033[33m[{letter}]\033[0m'  # Yellow for triage
-            elif letter == 'B':
-                return f'\033[32m[{letter}]\033[0m'  # Green for backlog
             else:
                 return f'[{letter}]'  # Standard for unknown
         else:
@@ -208,9 +215,12 @@ class JiraUtils:
         return ''
 
     def format_ticket_line(self, issue: dict, index: int, summary_length: int, use_colors: bool,
-                          show_due_date_prefix: bool = False, show_sprint: bool = True,
-                          show_asterisk: bool = False, sprint_start_date: str = None) -> str:
-        """Format a complete ticket line with all standard information."""
+                          show_due_date_prefix: bool = False, show_sprint: bool = False,
+                          show_asterisk: bool = False, show_status: bool = True) -> str:
+        """Format a complete ticket line with all standard information.
+
+        Standard format: [state] KEY-123 (updated) [story pts, assignee if present] [DUE:if present] [P:priority]: Summary
+        """
         fields = issue.get('fields', {})
         key = issue.get('key', 'N/A')
 
@@ -232,8 +242,8 @@ class JiraUtils:
         days, days_text = self.calculate_days_since_update(updated_str)
         days_part = self.format_days_with_color(days, days_text, use_colors)
 
-        # Status indicator
-        status_indicator = self.format_status_indicator(status_name, use_colors)
+        # Status indicator (always show for consistency)
+        status_indicator = self.format_status_indicator(status_name, use_colors) if show_status else ''
 
         # Due date prefix (for DUE SOON sections)
         due_date_prefix = ""
@@ -251,8 +261,8 @@ class JiraUtils:
 
         # Asterisk for tickets added after sprint start
         asterisk = ""
-        if show_asterisk and sprint_start_date:
-            asterisk = self.get_sprint_asterisk(issue, sprint_start_date, use_colors)
+        if show_asterisk:
+            asterisk = self.get_sprint_asterisk(issue, None, use_colors)
 
         # Build metadata parts
         assignee_part = f', {assignee_name}' if assignee_name else ''
@@ -269,7 +279,7 @@ class JiraUtils:
 
         priority_part = f'[P:{priority}]'
 
-        # Format final line
+        # Format final line in standard format
         return f'{index:2d}. {due_date_prefix}{asterisk}{status_indicator} {key} {days_part} [{story_points}pt{assignee_part}] {sprint_part}{due_part}{priority_part}: {summary}{summary_suffix}'
 
     def get_sprint_asterisk(self, issue: dict, sprint_start_date: str, use_colors: bool) -> str:
@@ -336,14 +346,14 @@ class JiraUtils:
         """Print status legend based on context."""
         if context == 'backlog':
             if use_colors:
-                print("\033[32m[B]\033[0m Backlog  \033[33m[T]\033[0m Triage  \033[33m[P]\033[0m In Progress  \033[33m[R]\033[0m In Review  \033[33m[Q]\033[0m Requirements  \033[31m[D]\033[0m Deferred  \033[31m[X]\033[0m Blocked")
+                print("\033[34m[B]\033[0m Backlog  \033[33m[T]\033[0m Triage  \033[33m[P]\033[0m In Progress  \033[33m[R]\033[0m In Review  \033[33m[Q]\033[0m Requirements  \033[34m[A]\033[0m Accepted  \033[34m[S]\033[0m Scheduled  \033[32m[V]\033[0m Verification  \033[32m[W]\033[0m Deploy  \033[32m[M]\033[0m Merge  \033[32m[Z]\033[0m Closure  \033[31m[D]\033[0m Deferred  \033[31m[_]\033[0m Abandoned  \033[31m[X]\033[0m Blocked")
             else:
-                print("[B] Backlog  [T] Triage  [P] In Progress  [R] In Review  [Q] Requirements  [D] Deferred  [X] Blocked")
-        else:  # full context for project-dashboard
+                print("[B] Backlog  [T] Triage  [P] In Progress  [R] In Review  [Q] Requirements  [A] Accepted  [S] Scheduled  [V] Verification  [W] Deploy  [M] Merge  [Z] Closure  [D] Deferred  [_] Abandoned  [X] Blocked")
+        else:  # full context for epic-dashboard
             if use_colors:
-                print("\033[32m[C]\033[0m Done  \033[33m[P]\033[0m In Progress  \033[33m[R]\033[0m In Review  \033[33m[T]\033[0m Triage  \033[32m[B]\033[0m Backlog  \033[33m[Q]\033[0m Requirements  \033[31m[D]\033[0m Deferred  \033[31m[X]\033[0m Blocked")
+                print("\033[32m[C]\033[0m Done  \033[33m[P]\033[0m In Progress  \033[33m[R]\033[0m In Review  \033[33m[T]\033[0m Triage  \033[34m[B]\033[0m Backlog  \033[33m[Q]\033[0m Requirements  \033[34m[A]\033[0m Accepted  \033[34m[S]\033[0m Scheduled  \033[32m[V]\033[0m Verification  \033[32m[W]\033[0m Deploy  \033[32m[M]\033[0m Merge  \033[32m[Z]\033[0m Closure  \033[31m[D]\033[0m Deferred  \033[31m[_]\033[0m Abandoned  \033[31m[X]\033[0m Blocked")
             else:
-                print("[C] Done  [P] In Progress  [R] In Review  [T] Triage  [B] Backlog  [Q] Requirements  [D] Deferred  [X] Blocked")
+                print("[C] Done  [P] In Progress  [R] In Review  [T] Triage  [B] Backlog  [Q] Requirements  [A] Accepted  [S] Scheduled  [V] Verification  [W] Deploy  [M] Merge  [Z] Closure  [D] Deferred  [_] Abandoned  [X] Blocked")
 
     def categorize_tickets_by_status(self, issues: List[dict]) -> Tuple[Dict[str, List[dict]], Dict[str, int]]:
         """Categorize tickets by status and return both tickets and counts."""
@@ -359,7 +369,7 @@ class JiraUtils:
             status_category = status_info.get('statusCategory', {}).get('key', '')
 
             # Categorize by status
-            if status_category == 'done':
+            if status_category == 'done' or status_name in ['Pending Verification', 'Abandoned']:
                 categories['done'].append(issue)
                 status_counts['done'] += 1
             elif 'blocked' in status_name.lower():
@@ -428,7 +438,8 @@ class JiraUtils:
 
     def add_common_arguments(self, parser, include_team: bool = True, include_count: bool = True,
                            default_count: int = 10, include_show_all: bool = False,
-                           include_deferred: bool = False, include_done: bool = False):
+                           include_deferred: bool = False, include_done: bool = False,
+                           include_backlog_jql: bool = False):
         """Add common command line arguments to argument parser."""
         if include_team:
             parser.add_argument('team', nargs='?', default='ciplat', help='Team name from config file (default: ciplat)')
@@ -449,6 +460,9 @@ class JiraUtils:
 
         if include_done:
             parser.add_argument('--hide-done', dest='show_done', action='store_false', help='Hide done tickets, show count only (default: show done tickets)')
+
+        if include_backlog_jql:
+            parser.add_argument('--backlog-jql', help='Custom JQL query for backlog items (overrides default project-based query)')
 
         if include_team:
             parser.add_argument('--list-teams', action='store_true', help='Show available teams from config file')

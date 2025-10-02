@@ -52,7 +52,7 @@ class BacklogCleanup:
             for issue in triage_items:
                 if items_shown >= count:
                     break
-                ticket_line = self.utils.format_ticket_line(issue, items_shown + 1, summary_length, use_colors, show_sprint=False)
+                ticket_line = self.utils.format_ticket_line(issue, items_shown + 1, summary_length, use_colors, show_status=True)
                 print(f'   {ticket_line}')
                 items_shown += 1
             print()
@@ -64,7 +64,7 @@ class BacklogCleanup:
                 if items_shown >= count:
                     break
                 ticket_line = self.utils.format_ticket_line(issue, items_shown + 1, summary_length, use_colors,
-                                                          show_due_date_prefix=True, show_sprint=False)
+                                                          show_due_date_prefix=True, show_status=True)
                 print(f'   {ticket_line}')
                 items_shown += 1
             print()
@@ -79,7 +79,7 @@ class BacklogCleanup:
             for issue in other_items:
                 if items_shown >= count:
                     break
-                ticket_line = self.utils.format_ticket_line(issue, items_shown + 1, summary_length, use_colors, show_sprint=False)
+                ticket_line = self.utils.format_ticket_line(issue, items_shown + 1, summary_length, use_colors, show_status=True)
                 print(f'   {ticket_line}')
                 items_shown += 1
 
@@ -108,8 +108,22 @@ class BacklogCleanup:
             self.utils.list_teams(self.config_file)
             sys.exit(1)
 
-        backlog_jql = team_config['backlog_jql']
+        # Build backlog JQL from projects or use custom override
+        projects = team_config.get('projects', '')
         display_name = team_config.get('display_name', args.team)
+
+        if hasattr(args, 'backlog_jql') and args.backlog_jql:
+            # Use custom JQL override
+            backlog_jql = args.backlog_jql
+        elif projects:
+            # Build default JQL from projects
+            backlog_jql = f'project IN ({projects}) AND sprint is EMPTY AND statusCategory != Done AND type not in (Deploy, Request)'
+        else:
+            # Fallback to configured JQL (for backward compatibility)
+            backlog_jql = team_config.get('backlog_jql', '')
+            if not backlog_jql:
+                print(f"❌ Error: Team '{args.team}' missing 'projects' or 'backlog_jql' field in config", file=sys.stderr)
+                sys.exit(1)
 
         # Modify JQL to include or exclude deferred tickets
         if hasattr(args, 'include_deferred') and args.include_deferred:
@@ -141,7 +155,7 @@ def main():
 
     utils = JiraUtils()
     utils.add_common_arguments(parser, include_team=True, include_count=True,
-                              default_count=20, include_deferred=True)
+                              default_count=20, include_deferred=True, include_backlog_jql=True)
 
     args = parser.parse_args()
 

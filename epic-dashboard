@@ -413,10 +413,7 @@ class ProjectDashboard:
         print("=" * 60)
 
         # Show status legend
-        if use_colors:
-            print("\033[32m[C]\033[0m Done  \033[33m[P]\033[0m In Progress  \033[33m[R]\033[0m In Review  \033[33m[T]\033[0m Triage  \033[32m[B]\033[0m Backlog  \033[33m[Q]\033[0m Requirements  \033[31m[D]\033[0m Deferred  \033[31m[X]\033[0m Blocked")
-        else:
-            print("[C] Done  [P] In Progress  [R] In Review  [T] Triage  [B] Backlog  [Q] Requirements  [D] Deferred  [X] Blocked")
+        self.utils.print_status_legend(use_colors, 'full')
         print()
 
         # Get all tickets for the epic(s)

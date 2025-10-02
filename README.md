@@ -171,9 +171,16 @@ Edit `teams.conf` to add new teams:
 ```ini
 [my-team]
 display_name = My Team Name
-sprint_jql = project IN (PROJ1,PROJ2) AND sprint = "My Sprint Name"
-backlog_jql = project IN (PROJ1,PROJ2) AND sprint is EMPTY AND statusCategory != Done AND status != Deferred
+projects = PROJ1,PROJ2
+sprint_name = My Sprint Name
+# backlog_jql = custom query  # Optional - defaults to project-based query
 ```
+
+**Automatic Behavior:**
+- **Sprint JQL**: Auto-generates `project IN (projects) AND sprint = "sprint_name"`
+- **Backlog JQL**: Auto-generates `project IN (projects) AND sprint is EMPTY AND statusCategory != Done AND type not in (Deploy, Request)`
+- **Sprint detection**: Uses `find-current-sprint` on first project if no `sprint_name` configured
+- **Overrides**: Use `--sprint "name"` or `--backlog-jql "query"` to override defaults
 
 ### Backlog Dashboard (`backlog-dashboard`)
 - **Triage focus**: Shows backlog items prioritized for cleanup sessions
