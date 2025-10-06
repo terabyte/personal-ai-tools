@@ -203,7 +203,7 @@ class TeamDashboard:
         else:
             return assignee_data.get('displayName', '')
 
-    def is_ticket_added_after_sprint_start(self, issue: dict) -> bool:
+    def is_ticket_added_after_sprint_start(self, issue: dict, sprint_name: str = None) -> bool:
         """Check if ticket was added to sprint after it started (at least 1 day after)."""
         try:
             fields = issue.get('fields', {})
@@ -218,9 +218,13 @@ class TeamDashboard:
                 created_str = created_str[:-2] + ':' + created_str[-2:]
             created_dt = datetime.fromisoformat(created_str)
 
-            # Find the active sprint start date
+            # Find the specified sprint or active sprint start date
             for sprint in sprints:
-                if sprint.get('state') == 'active':
+                # Match by sprint name if provided, otherwise use active sprint
+                sprint_matches = (sprint_name and sprint.get('name') == sprint_name) or \
+                                (not sprint_name and sprint.get('state') == 'active')
+
+                if sprint_matches:
                     start_date_str = sprint.get('startDate', '')
                     if start_date_str:
                         # Parse sprint start date
@@ -422,7 +426,8 @@ class TeamDashboard:
                 for i, ticket in enumerate(sorted_tickets, 1):
                     # Use shared formatting function with status indicator
                     line = self.utils.format_ticket_line(ticket, i, summary_length, use_colors,
-                                                       show_status=True, show_asterisk=True)
+                                                       show_status=True, show_asterisk=True,
+                                                       sprint_name=sprint_name)
                     print(f'   {line}')
                 print()
 

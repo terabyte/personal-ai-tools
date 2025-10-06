@@ -217,7 +217,7 @@ class JiraUtils:
 
     def format_ticket_line(self, issue: dict, index: int, summary_length: int, use_colors: bool,
                           show_due_date_prefix: bool = False, show_sprint: bool = False,
-                          show_asterisk: bool = False, show_status: bool = True) -> str:
+                          show_asterisk: bool = False, show_status: bool = True, sprint_name: str = None) -> str:
         """Format a complete ticket line with all standard information.
 
         Standard format: [state] KEY-123 (updated) [story pts, assignee if present] [DUE:if present] [P:priority]: Summary
@@ -263,7 +263,7 @@ class JiraUtils:
         # Asterisk for tickets added after sprint start
         asterisk = ""
         if show_asterisk:
-            asterisk = self.get_sprint_asterisk(issue, None, use_colors)
+            asterisk = self.get_sprint_asterisk(issue, sprint_name, use_colors)
 
         # Build metadata parts
         assignee_part = f', {assignee_name}' if assignee_name else ''
@@ -283,7 +283,7 @@ class JiraUtils:
         # Format final line in standard format
         return f'{index:2d}. {due_date_prefix}{asterisk}{status_indicator} {key} {days_part} [{story_points}pt{assignee_part}] {sprint_part}{due_part}{priority_part}: {summary}{summary_suffix}'
 
-    def get_sprint_asterisk(self, issue: dict, sprint_start_date: str, use_colors: bool) -> str:
+    def get_sprint_asterisk(self, issue: dict, sprint_name: str, use_colors: bool) -> str:
         """Get asterisk indicator for tickets added after sprint start."""
         try:
             fields = issue.get('fields', {})
@@ -298,9 +298,13 @@ class JiraUtils:
                 created_str = created_str[:-2] + ':' + created_str[-2:]
             created_dt = datetime.fromisoformat(created_str)
 
-            # Find the active sprint start date
+            # Find the specified sprint or active sprint start date
             for sprint in sprints:
-                if sprint.get('state') == 'active':
+                # Match by sprint name if provided, otherwise use active sprint
+                sprint_matches = (sprint_name and sprint.get('name') == sprint_name) or \
+                                (not sprint_name and sprint.get('state') == 'active')
+
+                if sprint_matches:
                     start_date_str = sprint.get('startDate', '')
                     if start_date_str:
                         # Parse sprint start date
