@@ -1,0 +1,36 @@
+# Team Configuration Example
+# Copy this file to teams.conf and customize for your organization
+#
+# Format: [team_name]
+# projects = comma-separated list of project keys for this team
+# sprint_name = current sprint name (optional - will auto-detect if not provided)
+# backlog_jql = JQL query for backlog items (optional - defaults to projects-based query)
+# display_name = Human readable team name
+
+[platform-team]
+display_name = Platform Engineering Team
+projects = PLAT,INFRA,TOOLS
+
+[frontend-team]
+display_name = Frontend Team
+projects = FRONT,UI,WEB
+
+[backend-team]
+display_name = Backend Team
+projects = API,SERVICE,DATA
+
+[support-team]
+display_name = Support Team
+projects = SUP,HELP,OPS
+
+# Example with explicit sprint name and custom backlog query
+[example-team]
+display_name = Example Team
+projects = PROJ1,PROJ2
+sprint_name = Sprint 2025-10  # Optional - will auto-detect current sprint if not provided
+backlog_jql = project IN (PROJ1,PROJ2) AND sprint is EMPTY AND statusCategory != Done AND status != Deferred  # Optional custom backlog query
+
+# Example with minimal configuration (uses auto-detection)
+[minimal-team]
+display_name = Minimal Team Example
+projects = PROJ3

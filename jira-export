@@ -249,21 +249,24 @@ def get_api_token() -> str:
 
 def get_default_email() -> str:
     """Get default email from TOKEN_ACCOUNT environment variable or current user."""
+    # Get email domain from environment or use indeed.com as default
+    email_domain = os.environ.get('EMAIL_DOMAIN', 'indeed.com')
+
     token_account = os.environ.get('TOKEN_ACCOUNT')
     if token_account:
         if '@' in token_account:
             return token_account
         else:
-            return f"{token_account}@indeed.com"
+            return f"{token_account}@{email_domain}"
 
     # Fall back to LDAPUSER or current user
     ldap_user = os.environ.get('LDAPUSER')
     if ldap_user:
-        return f"{ldap_user}@indeed.com"
+        return f"{ldap_user}@{email_domain}"
 
     # Final fallback to current user
     import getpass
-    return f"{getpass.getuser()}@indeed.com"
+    return f"{getpass.getuser()}@{email_domain}"
 
 def show_ai_help():
     """Display comprehensive help for AI usage."""

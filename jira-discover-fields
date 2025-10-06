@@ -1,0 +1,238 @@
+#!/usr/bin/env bash
+
+# Jira Custom Field Discovery Tool
+# Helps you find the custom field IDs for your Jira instance
+
+SELF=$(basename "$0")
+JIRA_API="$(dirname "$0")/jira-api"
+
+function usage {
+    cat <<EOF
+$SELF: Discover custom field IDs in your Jira instance
+
+USAGE:
+    $SELF [OPTIONS]
+
+OPTIONS:
+    -p, --project KEY    Show fields used in a specific project
+    -s, --search TERM    Filter fields by name (case-insensitive)
+    -h, --help           Show this help
+
+DESCRIPTION:
+    This tool queries your Jira instance to discover custom field IDs.
+    These field IDs are instance-specific and needed for the dashboard tools.
+
+COMMON FIELDS TO FIND:
+    - Story Points (often customfield_10026 or customfield_10061)
+    - Sprint (often customfield_10021)
+    - Rank (often customfield_10022)
+    - Epic Link (often customfield_10014)
+
+EXAMPLES:
+    $SELF                           # List all custom fields
+    $SELF --search "story points"   # Find story points field
+    $SELF --search "sprint"         # Find sprint field
+    $SELF --project MYPROJ          # Show fields used in project MYPROJ
+
+OUTPUT:
+    Field ID | Field Name | Field Type
+
+NOTES:
+    - Requires jira-api script in same directory
+    - Uses your configured Jira authentication
+    - Field IDs vary between Jira instances
+
+EOF
+    exit 0
+}
+
+function discover_all_fields {
+    local search_term="$1"
+
+    echo "Discovering custom fields from Jira..."
+    echo ""
+
+    # Get all fields from Jira
+    local response=$("$JIRA_API" GET /field 2>/dev/null)
+
+    if [[ $? -ne 0 ]] || [[ -z "$response" ]]; then
+        echo "❌ Failed to query Jira fields" >&2
+        return 1
+    fi
+
+    # Parse and display custom fields
+    echo "$response" | python3 -c "
+import json
+import sys
+
+try:
+    fields = json.load(sys.stdin)
+    custom_fields = [f for f in fields if f.get('id', '').startswith('customfield_')]
+
+    # Filter by search term if provided
+    search_term = '$search_term'.lower()
+    if search_term:
+        custom_fields = [f for f in custom_fields
+                        if search_term in f.get('name', '').lower()
+                        or search_term in f.get('id', '').lower()]
+
+    # Sort by ID
+    custom_fields.sort(key=lambda x: x.get('id', ''))
+
+    if not custom_fields:
+        if search_term:
+            print(f'No custom fields found matching \"{search_term}\"', file=sys.stderr)
+        else:
+            print('No custom fields found', file=sys.stderr)
+        sys.exit(1)
+
+    # Print header
+    print('{:<20} | {:<40} | {:<15}'.format('Field ID', 'Field Name', 'Type'))
+    print('-' * 80)
+
+    # Print each field
+    for field in custom_fields:
+        field_id = field.get('id', 'N/A')
+        field_name = field.get('name', 'N/A')
+        field_type = field.get('schema', {}).get('type', 'N/A')
+
+        # Truncate long names
+        if len(field_name) > 40:
+            field_name = field_name[:37] + '...'
+
+        print('{:<20} | {:<40} | {:<15}'.format(field_id, field_name, field_type))
+
+    print()
+    print(f'Total custom fields: {len(custom_fields)}')
+
+except json.JSONDecodeError as e:
+    print(f'Error parsing JSON: {e}', file=sys.stderr)
+    sys.exit(1)
+except Exception as e:
+    print(f'Error: {e}', file=sys.stderr)
+    sys.exit(1)
+"
+}
+
+function discover_project_fields {
+    local project_key="$1"
+
+    echo "Discovering fields used in project $project_key..."
+    echo ""
+
+    # Get a recent issue from the project to see what fields are populated
+    local jql="project=$project_key"
+    local response=$("$JIRA_API" GET "/search/jql?jql=$(printf '%s' "$jql" | sed 's/ /%20/g')&maxResults=1" 2>/dev/null)
+
+    if [[ $? -ne 0 ]] || [[ -z "$response" ]]; then
+        echo "❌ Failed to query project $project_key" >&2
+        return 1
+    fi
+
+    # Extract field IDs from the issue
+    echo "$response" | python3 -c "
+import json
+import sys
+
+try:
+    data = json.load(sys.stdin)
+    issues = data.get('issues', [])
+
+    if not issues:
+        print(f'No issues found in project $project_key', file=sys.stderr)
+        sys.exit(1)
+
+    issue = issues[0]
+    fields = issue.get('fields', {})
+
+    # Filter to custom fields with non-null values
+    custom_fields = {k: v for k, v in fields.items()
+                    if k.startswith('customfield_') and v is not None}
+
+    if not custom_fields:
+        print('No custom fields with values found in this project')
+        sys.exit(0)
+
+    print(f'Custom fields with values in {issue.get(\"key\", \"issue\")}:')
+    print()
+    print('{:<20} | {:<40}'.format('Field ID', 'Sample Value'))
+    print('-' * 65)
+
+    for field_id in sorted(custom_fields.keys()):
+        value = custom_fields[field_id]
+
+        # Format value for display
+        if isinstance(value, dict):
+            if 'name' in value:
+                value_str = value['name']
+            elif 'value' in value:
+                value_str = value['value']
+            else:
+                value_str = str(value)[:40]
+        elif isinstance(value, list):
+            if len(value) > 0 and isinstance(value[0], dict):
+                value_str = ', '.join([str(v.get('name', v)) for v in value[:3]])
+            else:
+                value_str = str(value)[:40]
+        else:
+            value_str = str(value)[:40]
+
+        # Truncate long values
+        if len(value_str) > 40:
+            value_str = value_str[:37] + '...'
+
+        print('{:<20} | {:<40}'.format(field_id, value_str))
+
+    print()
+    print(f'Total custom fields with values: {len(custom_fields)}')
+    print()
+    print('TIP: Use --search with field names from the full list to find IDs')
+
+except json.JSONDecodeError as e:
+    print(f'Error parsing JSON: {e}', file=sys.stderr)
+    sys.exit(1)
+except Exception as e:
+    print(f'Error: {e}', file=sys.stderr)
+    sys.exit(1)
+"
+}
+
+function main {
+    # Check if jira-api script exists
+    if [[ ! -x "$JIRA_API" ]]; then
+        echo "❌ Error: jira-api script not found at $JIRA_API" >&2
+        exit 1
+    fi
+
+    # Parse arguments
+    local project_key=""
+    local search_term=""
+
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            -h|--help)
+                usage
+                ;;
+            -p|--project)
+                project_key="$2"
+                shift 2
+                ;;
+            -s|--search)
+                search_term="$2"
+                shift 2
+                ;;
+            *)
+                echo "Unknown option: $1" >&2
+                usage
+                ;;
+        esac
+    done
+
+    if [[ -n "$project_key" ]]; then
+        discover_project_fields "$project_key"
+    else
+        discover_all_fields "$search_term"
+    fi
+}
+
+main "$@"

@@ -2,10 +2,39 @@
 
 This repo contains tools I have built to enable me to use AI more easily in my daily workflows. They are mostly commands and scripts for having Claude interact with Jira, Confluence, Gitlab, and other things so I don't have to.
 
+## License
+
+This software is released into the public domain under the UNLICENSE. See the UNLICENSE file for details.
+
+## Configuration for Your Organization
+
+These tools are designed to work with any Jira/Confluence/GitLab instance. The default configuration uses Indeed's URLs and domain, but you can customize these via environment variables:
+
+**Required customization:**
+- `JIRA_URL` - Your Jira instance URL (default: https://indeed.atlassian.net)
+- `CONFLUENCE_URL` - Your Confluence instance URL (default: https://indeed.atlassian.net)
+- `GITLAB_URL` - Your GitLab instance URL (default: https://code.corp.indeed.com)
+- `PAGERDUTY_URL` - Your PagerDuty instance URL (default: https://api.pagerduty.com)
+- `EMAIL_DOMAIN` - Your organization's email domain (default: indeed.com)
+
+**Team configuration:**
+1. Copy `teams.conf.example` to `teams.conf`
+2. Edit `teams.conf` with your project keys and team names
+3. Use `jira-discover-fields` to find your instance-specific custom field IDs
+
+**Instance-specific field IDs:**
+Custom field IDs vary between Jira instances. Use the `jira-discover-fields` tool to discover your field IDs for:
+- Story Points
+- Sprint
+- Rank
+- Epic Link
+- Other custom fields
+
 ## Tools
 
 - **jira-export** - Exports Jira tickets with full history and custom fields to JSON for AI analysis (run with `--help-ai` for detailed usage)
 - **jira-api** - Bash wrapper for Jira REST API with cross-platform authentication (includes comprehensive usage docs and field IDs in script)
+- **jira-discover-fields** - Discover custom field IDs in your Jira instance (essential for configuration)
 - **confluence-api** - Bash wrapper for Confluence REST API with cross-platform authentication (includes comprehensive usage docs in script)
 - **calendar-link** - Generates Google Calendar event URLs from command line parameters with optional browser integration
 - **gitlab-api** - Bash wrapper for GitLab REST API with keychain authentication
@@ -19,13 +48,19 @@ This repo contains tools I have built to enable me to use AI more easily in my d
 ## API Usage Notes
 
 ### Authentication
+
+All Atlassian tools (`jira-api`, `jira-export`, `confluence-api`) support:
+1. **Token file**: `~/.atlassian-mcp-token` (preferred for Linux/cross-platform)
+2. **Environment variables**: `JIRA_TOKEN`, `CONFLUENCE_TOKEN`
+3. **macOS Keychain**: Automatic fallback on macOS systems
+
 ### PagerDuty API (`pagerduty-api`)
 - **Token-based auth**: Uses PagerDuty API tokens with `Authorization: Token token=...` header
 - **API v2**: Uses PagerDuty REST API v2 with proper Accept headers
 - **Cross-platform**: Token file, environment variable, or keychain support
 
 **Token Setup:**
-1. Visit: https://indeed.pagerduty.com/api_keys
+1. Visit your PagerDuty instance: `https://YOUR-DOMAIN.pagerduty.com/api_keys`
 2. Create new API key with description "Personal CLI Tools"
 3. Store in `~/.pagerduty-token` file or `PAGERDUTY_TOKEN` environment variable
 
@@ -47,11 +82,6 @@ pagerduty-api GET "/oncalls?schedule_ids%5B%5D=SCHEDULE_ID"
 pagerduty-api GET /users
 ```
 
-All Atlassian tools (`jira-api`, `jira-export`, `confluence-api`) support:
-1. **Token file**: `~/.atlassian-mcp-token` (preferred for Linux/cross-platform)
-2. **Environment variables**: `JIRA_TOKEN`, `CONFLUENCE_TOKEN`
-3. **macOS Keychain**: Automatic fallback on macOS systems
-
 ### Jira API (`jira-api`)
 - **Modern API**: Uses `/rest/api/3` (v2 is deprecated)
 - **Search syntax**: Use `/search/jql?jql=QUERY` for ticket searches
@@ -59,10 +89,22 @@ All Atlassian tools (`jira-api`, `jira-export`, `confluence-api`) support:
 - **Field IDs**: Bug tickets require environment field (`customfield_11674`)
 - **Issue types**: Task=10009, Bug=10017, New Feature=11081 (CIPLAT project)
 
-**Critical Field IDs (Indeed-specific):**
-- **Story Points**: `customfield_10061` (not 10026)
+**Critical Field IDs (INSTANCE-SPECIFIC - these are Indeed's, use `jira-discover-fields` to find yours):**
+- **Story Points**: `customfield_10061` (varies by instance, commonly 10026 or 10061)
 - **Sprint**: `customfield_10021` (contains sprint info with start/end dates)
 - **Rank**: `customfield_10022` (controls backlog ordering, format: `0|prefix:suffix`)
+
+**To find your field IDs:**
+```bash
+# List all custom fields
+./jira-discover-fields
+
+# Search for specific field
+./jira-discover-fields --search "story points"
+
+# Show fields used in a project
+./jira-discover-fields --project MYPROJ
+```
 
 **Backlog Sorting (Rank Field):**
 - **Format**: `0|hzzwg1:000i` where `hzzwg1` is prefix, `000i` is suffix
@@ -80,22 +122,22 @@ project IN (PROJ1,PROJ2) AND sprint is EMPTY AND statusCategory != Done AND stat
 # Excludes: items in sprints, completed work, deferred items
 ```
 
-**Common JQL Patterns:**
+**Common JQL Patterns (NOTE: project names in examples are fictional, replace with your projects):**
 ```bash
 # Recent activity
-./jira-api GET "/search/jql?jql=project%3DCIPLAT%20AND%20updated%20%3E%3D%20-14d&fields=key,summary,status"
+./jira-api GET "/search/jql?jql=project%3DMYPROJ%20AND%20updated%20%3E%3D%20-14d&fields=key,summary,status"
 
 # Multi-project search
-./jira-api GET "/search/jql?jql=project%20IN%20(CIPLAT,GITLAB,NEXUS)&fields=key,summary"
+./jira-api GET "/search/jql?jql=project%20IN%20(PROJ1,PROJ2,PROJ3)&fields=key,summary"
 
 # Sprint tickets
-./jira-api GET "/search/jql?jql=project%3DCIPLAT%20AND%20sprint%20%3D%20%22CIPLAT%202025-10-07%22&fields=key,summary,status"
+./jira-api GET "/search/jql?jql=project%3DMYPROJ%20AND%20sprint%20%3D%20%22Sprint%202025-10-07%22&fields=key,summary,status"
 
 # Epic children
-./jira-api GET "/search/jql?jql=%22Epic%20Link%22%20%3D%20CIPLAT-2148&fields=key,summary,status"
+./jira-api GET "/search/jql?jql=%22Epic%20Link%22%20%3D%20MYPROJ-1234&fields=key,summary,status"
 
 # Status filtering
-./jira-api GET "/search/jql?jql=project%3DCIPLAT%20AND%20status%20IN%20(%27Pending%20Triage%27,%27on%20Backlog%27)&fields=key,summary"
+./jira-api GET "/search/jql?jql=project%3DMYPROJ%20AND%20status%20IN%20(%27Pending%20Triage%27,%27on%20Backlog%27)&fields=key,summary"
 ```
 
 **API Endpoint Failures:**
@@ -147,20 +189,19 @@ calendar-link -t "Conference" -d "20250928/20250929" -l "Austin, TX"
 - **Auto-sizing**: Adapts summary length to terminal width automatically
 - **Color support**: ANSI colors for xterm with `--color` flag
 
-**Examples:**
+**Examples (NOTE: team names are from teams.conf, configure yours first):**
 ```bash
-# Default CIPLAT dashboard
+# Default team (first in config)
 sprint-dashboard
 
-# CDPLAT team dashboard
-sprint-dashboard cdplat
+# Specific team dashboard
+sprint-dashboard platform-team
 
 # Support team dashboards
-sprint-dashboard ciplat-support
-sprint-dashboard cdplat-support
+sprint-dashboard support-team
 
 # With options
-sprint-dashboard cdplat --count 15 --color --length 100
+sprint-dashboard backend-team --count 15 --color --length 100
 
 # List available teams
 sprint-dashboard --list-teams
@@ -195,31 +236,31 @@ sprint_name = My Sprint Name
 # Default backlog triage (excludes deferred)
 backlog-dashboard
 
-# CDPLAT backlog
-backlog-dashboard cdplat
+# Specific team backlog
+backlog-dashboard backend-team
 
 # Include deferred tickets
-backlog-dashboard ciplat --include-deferred
+backlog-dashboard platform-team --include-deferred
 
 # Show more items
-backlog-dashboard ciplat --count 50
+backlog-dashboard platform-team --count 50
 ```
 
 ### Find Current Sprint (`find-current-sprint`)
 - **Purpose**: Discovers the active sprint name for any Jira project
 - **Usage**: `find-current-sprint PROJECT_KEY`
-- **Output**: Current sprint name (e.g., "CIPLAT 2025-10-07", "CD Platform Sprint 131")
-- **Use case**: Get sprint names to update `sprint-dashboard.conf` with accurate sprint-based JQL queries
+- **Output**: Current sprint name (e.g., "Platform Sprint 2025-10-07", "Backend Sprint 131")
+- **Use case**: Get sprint names to update `teams.conf` with accurate sprint-based JQL queries
 
 **Examples:**
 ```bash
 # Find current sprints
-find-current-sprint CIPLAT    # → "CIPLAT 2025-10-07"
-find-current-sprint MARVIN    # → "CD Platform Sprint 131"
-find-current-sprint ORC       # → "CD Platform Sprint 131"
+find-current-sprint PLAT      # → "Platform Sprint 2025-10-07"
+find-current-sprint BACKEND   # → "Backend Sprint 131"
+find-current-sprint FRONTEND  # → "Frontend Sprint 131"
 
 # Use output to update config
-echo "sprint_jql = project=CIPLAT AND sprint = \"$(./find-current-sprint CIPLAT)\""
+echo "sprint_jql = project=PLAT AND sprint = \"$(./find-current-sprint PLAT)\""
 ```
 
 ### Epic Dashboard (`epic-dashboard`)
@@ -234,19 +275,19 @@ echo "sprint_jql = project=CIPLAT AND sprint = \"$(./find-current-sprint CIPLAT)
 **Examples:**
 ```bash
 # Single epic status (show all)
-epic-dashboard CIPLAT-2148
+epic-dashboard PLAT-1234
 
 # Multiple epics
-epic-dashboard CIPLAT-2148,CIPLAT-2150
+epic-dashboard PLAT-1234,PLAT-5678
 
 # Hide completed work for focus
-epic-dashboard CIPLAT-2148 --hide-done
+epic-dashboard PLAT-1234 --hide-done
 
 # Filter out minor contributors
-epic-dashboard CIPLAT-2148 --hide-trivial-contributors
+epic-dashboard PLAT-1234 --hide-trivial-contributors
 
 # With options
-epic-dashboard CIPLAT-2148 --color --length 120
+epic-dashboard PLAT-1234 --color --length 120
 ```
 
 **Output Format:**
@@ -263,14 +304,14 @@ epic-dashboard CIPLAT-2148 --color --length 120
 
 **Examples:**
 ```bash
-# Find active CIPLAT epics (last 30 days)
-find-active-epics CIPLAT
+# Find active Platform epics (last 30 days)
+find-active-epics PLAT
 
-# Find MARVIN epics with activity in last 60 days
-find-active-epics MARVIN --days 60
+# Find Backend epics with activity in last 60 days
+find-active-epics BACKEND --days 60
 
 # Use output with project dashboard
-./find-active-epics CIPLAT --days 60
-# → CIPLAT-2148: Nexus Replacement (Cloudsmith) - Phase 1 (updated 38d ago)
-./epic-dashboard CIPLAT-2148
+./find-active-epics PLAT --days 60
+# → PLAT-1234: Authentication Service Migration (updated 38d ago)
+./epic-dashboard PLAT-1234
 ```

@@ -11,8 +11,11 @@ CURL_OPTS=${CURL_OPTS:--s}
 # Path to the API endpoint.
 JIRA_API_URL=${JIRA_URL}/rest/api/3
 
+# Email domain for token account (customizable via EMAIL_DOMAIN environment variable)
+EMAIL_DOMAIN=${EMAIL_DOMAIN:-indeed.com}
+
 # "username" to use to search for the key in the keychain
-TOKEN_ACCOUNT=${TOKEN_ACCOUNT:-$LDAPUSER}@indeed.com
+TOKEN_ACCOUNT=${TOKEN_ACCOUNT:-$LDAPUSER}@${EMAIL_DOMAIN}
 
 function usage {
     cat <<USAGE
