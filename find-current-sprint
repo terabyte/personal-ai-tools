@@ -40,11 +40,14 @@ function find_active_sprint {
     # Parse sprint information to find active sprint
     echo "$response" | python3 -c "
 import json, sys
+from datetime import datetime
 try:
     data = json.load(sys.stdin)
     issues = data.get('issues', [])
 
     active_sprints = set()
+    future_sprints = []
+    closed_sprints = []
 
     for issue in issues:
         fields = issue.get('fields', {})
@@ -52,16 +55,35 @@ try:
 
         if sprints:
             for sprint in sprints:
-                if sprint.get('state') == 'active':
-                    sprint_name = sprint.get('name', '')
-                    if sprint_name:
-                        active_sprints.add(sprint_name)
+                state = sprint.get('state')
+                sprint_name = sprint.get('name', '')
 
+                if not sprint_name:
+                    continue
+
+                if state == 'active':
+                    active_sprints.add(sprint_name)
+                elif state == 'future':
+                    start_date = sprint.get('startDate', '')
+                    future_sprints.append((sprint_name, start_date))
+                elif state == 'closed':
+                    end_date = sprint.get('endDate', '')
+                    closed_sprints.append((sprint_name, end_date))
+
+    # Priority: active > future > closed
     if active_sprints:
         # If multiple active sprints, pick the first one alphabetically
         print(sorted(active_sprints)[0])
+    elif future_sprints:
+        # Pick the future sprint with the earliest start date
+        future_sprints.sort(key=lambda x: x[1] if x[1] else '')
+        print(future_sprints[0][0])
+    elif closed_sprints:
+        # Pick the most recently closed sprint (latest end date)
+        closed_sprints.sort(key=lambda x: x[1] if x[1] else '', reverse=True)
+        print(closed_sprints[0][0])
     else:
-        print('No active sprint found', file=sys.stderr)
+        print('No sprint found', file=sys.stderr)
         sys.exit(1)
 
 except Exception as e:
