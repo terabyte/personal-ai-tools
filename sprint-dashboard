@@ -350,7 +350,7 @@ class TeamDashboard:
 
         if not issues:
             state_suffix = f" [{sprint_state}]" if sprint_state else ""
-            print(f"{sprint_header}{state_suffix} (0 tickets)")
+            print(f"{sprint_header}{state_suffix} (0 tickets, 0 pts)")
             print("=" * 60)
             print("No tickets found in sprint")
             return
@@ -359,6 +359,8 @@ class TeamDashboard:
         from collections import defaultdict
         categories = defaultdict(list)
         status_counts = defaultdict(int)
+        category_story_points = defaultdict(float)
+        total_story_points = 0
 
         for issue in issues:
             fields = issue.get('fields', {})
@@ -366,31 +368,51 @@ class TeamDashboard:
             status_name = status_info.get('name', 'Unknown')
             status_category = status_info.get('statusCategory', {}).get('key', '')
 
+            # Accumulate story points
+            story_points = fields.get('customfield_10061', 0)
+            points_value = 0
+            if story_points:
+                try:
+                    points_value = float(story_points)
+                    total_story_points += points_value
+                except (ValueError, TypeError):
+                    pass
+
             # Sprint-specific categorization with separate verification category
             if status_name in ['In Review', 'Pending Review', 'Pending Verification', 'Pending Closure', 'Pending Deploy', 'Pending Merge']:
                 categories['verification'].append(issue)
                 status_counts['verification'] += 1
+                category_story_points['verification'] += points_value
             elif status_category == 'done' or status_name == 'Abandoned':
                 categories['done'].append(issue)
                 status_counts['done'] += 1
+                category_story_points['done'] += points_value
             elif 'blocked' in status_name.lower():
                 categories['blocked'].append(issue)
                 status_counts['blocked'] += 1
+                category_story_points['blocked'] += points_value
             elif status_name in ['In Progress']:
                 categories['in_progress'].append(issue)
                 status_counts['in_progress'] += 1
+                category_story_points['in_progress'] += points_value
             else:
                 # Everything else goes to TO-DO
                 categories['todo'].append(issue)
                 status_counts['todo'] += 1
+                category_story_points['todo'] += points_value
 
         categories = dict(categories)
         status_counts = dict(status_counts)
 
         # Show header with total count and sprint state
         total_tickets = len(issues)
+        # Format story points as integer if whole number
+        if total_story_points == int(total_story_points):
+            pts_str = f"{int(total_story_points)} pts"
+        else:
+            pts_str = f"{total_story_points} pts"
         state_suffix = f" [{sprint_state}]" if sprint_state else ""
-        print(f"{sprint_header}{state_suffix} ({total_tickets} tickets)")
+        print(f"{sprint_header}{state_suffix} ({total_tickets} tickets, {pts_str})")
         print("=" * 60)
         print()
 
@@ -418,9 +440,17 @@ class TeamDashboard:
         ]:
             ticket_list = categories.get(section_key, [])
             count = status_counts.get(section_key, 0)
+            section_points = category_story_points.get(section_key, 0)
 
             if ticket_list:
-                print(f"{section_name} ({count}):")
+                # Format story points as integer if whole number
+                if section_points == int(section_points):
+                    pts_str = f"{int(section_points)} pts"
+                else:
+                    pts_str = f"{section_points} pts"
+                # Format ticket count
+                ticket_str = "ticket" if count == 1 else "tickets"
+                print(f"{section_name} ({count} {ticket_str}, {pts_str}):")
                 # Sort by most recently updated and format all tickets
                 sorted_tickets = sort_by_updated(ticket_list)
                 for i, ticket in enumerate(sorted_tickets, 1):
