@@ -8,6 +8,8 @@ Provides a split-pane interface with vim keybindings for browsing tickets
 import sys
 import subprocess
 import webbrowser
+import textwrap
+import threading
 from typing import List, Optional
 from pathlib import Path
 
@@ -29,6 +31,10 @@ class JiraTUI:
         self.use_colors = use_colors
         self.show_full = True  # Toggle for full mode (all comments/history)
         self.ticket_cache = {}  # Cache for full ticket details
+        self.loading_complete = False  # Track if background loading is done
+        self.loading_count = 0  # Track how many tickets loaded
+        self.loading_total = 0  # Track total tickets to load
+        self.loading_lock = threading.Lock()  # Thread-safe cache updates
 
     def run(self, query_or_ticket: str) -> int:
         """
@@ -114,18 +120,25 @@ class JiraTUI:
             stdscr.getch()
             return 0
 
-        # Pre-fetch and cache all ticket details for fast switching
-        stdscr.addstr(0, 0, "Loading ticket details...")
+        # Load first ticket synchronously for immediate display
+        stdscr.addstr(0, 0, "Loading first ticket...")
         stdscr.refresh()
-        for idx, ticket in enumerate(tickets):
-            ticket_key = ticket.get('key')
-            full_ticket = self.viewer.fetch_ticket_details(ticket_key)
-            if full_ticket:
-                self.ticket_cache[ticket_key] = full_ticket
-            # Show progress
-            if (idx + 1) % 5 == 0 or idx == len(tickets) - 1:
-                stdscr.addstr(0, 0, f"Loading ticket details... {idx + 1}/{len(tickets)}")
-                stdscr.refresh()
+        first_ticket_key = tickets[0].get('key')
+        first_ticket = self.viewer.fetch_ticket_details(first_ticket_key)
+        if first_ticket:
+            with self.loading_lock:
+                self.ticket_cache[first_ticket_key] = first_ticket
+                self.loading_count = 1
+
+        # Start background thread to load remaining tickets
+        self.loading_total = len(tickets)
+        self.loading_complete = False
+        if len(tickets) > 1:
+            thread = threading.Thread(target=self._load_tickets_background, args=(tickets[1:],), daemon=True)
+            thread.start()
+        else:
+            self.loading_complete = True
+
         stdscr.clear()
 
         # State management
@@ -207,15 +220,32 @@ class JiraTUI:
             elif key == ord('r'):  # Refresh
                 tickets, _ = self._fetch_tickets(query_or_ticket)
                 selected_idx = min(selected_idx, len(tickets) - 1)
-                # Re-cache ticket details
+
+                # Clear cache and reset loading state
                 self.ticket_cache.clear()
-                stdscr.addstr(0, 0, "Refreshing...")
+                with self.loading_lock:
+                    self.loading_complete = False
+                    self.loading_count = 0
+                    self.loading_total = len(tickets)
+
+                # Load current ticket first (synchronously)
+                current_ticket_key = tickets[selected_idx].get('key')
+                stdscr.addstr(0, 0, "Refreshing current ticket...")
                 stdscr.refresh()
-                for idx, ticket in enumerate(tickets):
-                    ticket_key = ticket.get('key')
-                    full_ticket = self.viewer.fetch_ticket_details(ticket_key)
-                    if full_ticket:
-                        self.ticket_cache[ticket_key] = full_ticket
+                current_ticket = self.viewer.fetch_ticket_details(current_ticket_key)
+                if current_ticket:
+                    with self.loading_lock:
+                        self.ticket_cache[current_ticket_key] = current_ticket
+                        self.loading_count = 1
+
+                # Load remaining tickets in background
+                remaining_tickets = [t for t in tickets if t.get('key') != current_ticket_key]
+                if remaining_tickets:
+                    thread = threading.Thread(target=self._load_tickets_background, args=(remaining_tickets,), daemon=True)
+                    thread.start()
+                else:
+                    with self.loading_lock:
+                        self.loading_complete = True
             elif key == ord('f'):  # Toggle full mode
                 self.show_full = not self.show_full
             elif key == ord('v'):  # Open in browser
@@ -256,6 +286,20 @@ class JiraTUI:
             issues = self.viewer.utils.fetch_all_jql_results(query_or_ticket, fields, max_items=100)
             return issues, False
 
+    def _load_tickets_background(self, tickets: List[dict]) -> None:
+        """Background thread to load ticket details."""
+        for ticket in tickets:
+            ticket_key = ticket.get('key')
+            full_ticket = self.viewer.fetch_ticket_details(ticket_key)
+            if full_ticket:
+                with self.loading_lock:
+                    self.ticket_cache[ticket_key] = full_ticket
+                    self.loading_count += 1
+
+        # Mark loading as complete
+        with self.loading_lock:
+            self.loading_complete = True
+
     def _draw_ticket_list(self, stdscr, tickets: List[dict], selected_idx: int,
                          scroll_offset: int, max_height: int, max_width: int,
                          search_query: str):
@@ -284,14 +328,39 @@ class JiraTUI:
             summary_max = max_width - len(key) - 6
             summary = fields.get('summary', 'No summary')[:summary_max]
 
-            # Format line
-            line = f"[{status_letter}] {key}: {summary}"
+            # Highlight selection
+            is_selected = i == selected_idx
+            base_attr = curses.A_REVERSE if is_selected else curses.A_NORMAL
 
-            # Highlight if selected
-            attr = curses.A_REVERSE if i == selected_idx else curses.A_NORMAL
+            # Determine status color (matching dashboard style)
+            if status_letter in ['C', 'V', 'Z', 'Y', 'M']:
+                status_color = curses.color_pair(1)  # Green for done
+            elif status_letter in ['A', 'B', 'S', 'W']:
+                status_color = curses.color_pair(3)  # Blue for backlog
+            elif status_letter in ['P', 'R', 'Q', 'T']:
+                status_color = curses.color_pair(2)  # Yellow for active
+            elif status_letter in ['D', 'X', '_']:
+                status_color = curses.color_pair(4)  # Red for blocked
+            else:
+                status_color = curses.A_NORMAL
 
+            # Draw line in colored segments
             try:
-                stdscr.addstr(y, 0, line[:max_width - 1], attr)
+                x_pos = 0
+                # Draw status indicator with color
+                stdscr.addstr(y, x_pos, f"[{status_letter}]", status_color | base_attr)
+                x_pos += len(f"[{status_letter}]")
+
+                # Draw space
+                stdscr.addstr(y, x_pos, " ", base_attr)
+                x_pos += 1
+
+                # Draw key in green
+                stdscr.addstr(y, x_pos, key, curses.color_pair(1) | base_attr)
+                x_pos += len(key)
+
+                # Draw colon and summary
+                stdscr.addstr(y, x_pos, f": {summary}", base_attr)
             except curses.error:
                 pass
 
@@ -312,6 +381,7 @@ class JiraTUI:
         # Extract key information
         summary = fields.get('summary', 'No summary')
         status = fields.get('status', {}).get('name', 'Unknown')
+        status_letter = self.viewer.utils.get_status_letter(status)
         assignee = fields.get('assignee')
         assignee_name = self.viewer.utils.get_assignee_name(assignee) if assignee else 'Unassigned'
         priority = fields.get('priority', {}).get('name', 'None')
@@ -320,27 +390,30 @@ class JiraTUI:
         y = 0
         lines = []
 
-        # Header
-        lines.append(f" {ticket_key}")
-        lines.append(f" {summary[:max_width - 3]}")
-        lines.append("")
-        lines.append(f" Status: {status}")
-        lines.append(f" Assignee: {assignee_name}")
-        lines.append(f" Priority: {priority}")
-        lines.append("")
+        # Header (wrap all lines to ensure they fit)
+        lines.append(("KEY", f" {ticket_key}"[:max_width - 2]))  # Tagged for coloring
+        # Wrap summary if too long
+        summary_wrapped = self._wrap_text(summary, max_width - 3)
+        for s_line in summary_wrapped:
+            lines.append(("SUMMARY", f" {s_line}"))
+
+        lines.append(("", ""))
+        lines.append((f"STATUS_{status_letter}", f" Status: {status}"[:max_width - 2]))
+        lines.append(("", f" Assignee: {assignee_name}"[:max_width - 2]))
+        lines.append((f"PRIORITY_{priority}", f" Priority: {priority}"[:max_width - 2]))
+        lines.append(("", ""))
 
         # Description
         description = fields.get('description')
         if description:
-            lines.append(" Description:")
-            desc_text = self.viewer.format_description(description, self.use_colors, indent="")
-            desc_text = self._strip_ansi(desc_text)
+            lines.append(("HEADER", (" Description:")[:max_width - 2]))
+            desc_text = self.viewer.format_description(description, False, indent="")
             # Wrap description
             for line in desc_text.split('\n'):
                 wrapped = self._wrap_text(line, max_width - 4)
-                lines.extend([f"  {l}" for l in wrapped])
+                lines.extend([("", f"  {l}") for l in wrapped])
 
-        lines.append("")
+        lines.append(("", ""))
 
         # Comments
         comments_data = fields.get('comment', {})
@@ -349,22 +422,21 @@ class JiraTUI:
         if all_comments:
             if self.show_full:
                 comments_to_show = all_comments
-                lines.append(f" ──── All Comments ({len(all_comments)}) ────")
+                lines.append(("HEADER", (f" ──── All Comments ({len(all_comments)}) ────")[:max_width - 2]))
             else:
                 comments_to_show = self.viewer.filter_recent_comments(all_comments)
-                lines.append(f" ──── Recent Comments ({len(comments_to_show)}/{len(all_comments)}) ────")
+                lines.append(("HEADER", (f" ──── Recent Comments ({len(comments_to_show)}/{len(all_comments)}) ────")[:max_width - 2]))
 
             for comment in comments_to_show:
-                comment_text = self.viewer.format_comment(comment, self.use_colors)
-                comment_text = self._strip_ansi(comment_text)
+                comment_text = self.viewer.format_comment(comment, False)
                 for line in comment_text.split('\n'):
                     wrapped = self._wrap_text(line, max_width - 4)
-                    lines.extend([f"  {l}" for l in wrapped])
-                lines.append("")
+                    lines.extend([("", f"  {l}") for l in wrapped])
+                lines.append(("", ""))
         else:
-            lines.append(" ──── Comments ────")
-            lines.append("  (No comments)")
-            lines.append("")
+            lines.append(("HEADER", (" ──── Comments ────")[:max_width - 2]))
+            lines.append(("", "  (No comments)"))
+            lines.append(("", ""))
 
         # History (only if full mode)
         if self.show_full:
@@ -372,19 +444,52 @@ class JiraTUI:
             histories = changelog.get('histories', [])
 
             if histories:
-                lines.append(f" ──── Change History ({len(histories)}) ────")
+                lines.append(("HEADER", (f" ──── Change History ({len(histories)}) ────")[:max_width - 2]))
                 for history in histories:
-                    history_lines = self.viewer.format_history_entry(history, self.use_colors)
+                    history_lines = self.viewer.format_history_entry(history, False)
                     for line in history_lines:
-                        line = self._strip_ansi(line)
                         wrapped = self._wrap_text(line, max_width - 4)
-                        lines.extend([f"  {l}" for l in wrapped])
-                    lines.append("")
+                        lines.extend([("", f"  {l}") for l in wrapped])
+                    lines.append(("", ""))
 
         # Draw all lines (with scrolling support if needed)
-        for i, line in enumerate(lines[:max_height - 1]):
+        for i, (tag, line) in enumerate(lines[:max_height - 1]):
+            # Determine color based on tag
+            if tag == "KEY":
+                attr = curses.color_pair(1) | curses.A_BOLD  # Green bold
+            elif tag == "SUMMARY":
+                attr = curses.A_BOLD  # Bold
+            elif tag == "HEADER":
+                attr = curses.color_pair(3)  # Blue
+            elif tag.startswith("STATUS_"):
+                # Map status letter to color (matching dashboard style)
+                status_letter = tag.split("_")[1]
+                if status_letter in ['C', 'V', 'Z', 'Y', 'M']:
+                    attr = curses.color_pair(1)  # Green for done
+                elif status_letter in ['A', 'B', 'S', 'W']:
+                    attr = curses.color_pair(3)  # Blue for backlog
+                elif status_letter in ['P', 'R', 'Q', 'T']:
+                    attr = curses.color_pair(2)  # Yellow for active
+                elif status_letter in ['D', 'X', '_']:
+                    attr = curses.color_pair(4)  # Red for blocked
+                else:
+                    attr = curses.A_NORMAL
+            elif tag.startswith("PRIORITY_"):
+                # Map priority to color
+                priority = tag.split("_", 1)[1]
+                if priority in ['Critical', 'Blocker', 'Highest']:
+                    attr = curses.color_pair(4)  # Red
+                elif priority in ['High']:
+                    attr = curses.color_pair(2)  # Yellow
+                elif priority in ['Low', 'Lowest']:
+                    attr = curses.color_pair(3)  # Blue
+                else:
+                    attr = curses.A_NORMAL  # Medium/None
+            else:
+                attr = curses.A_NORMAL
+
             try:
-                stdscr.addstr(i, x_offset + 1, line[:max_width - 2])
+                stdscr.addstr(i, x_offset + 1, line[:max_width - 2], attr)
             except curses.error:
                 pass
 
@@ -392,6 +497,12 @@ class JiraTUI:
                         total: int, search_query: str):
         """Draw status bar at bottom showing commands and position."""
         status_left = f" {current}/{total}"
+
+        # Add loading indicator if still loading
+        with self.loading_lock:
+            if not self.loading_complete:
+                status_left += f" [Loading {self.loading_count}/{self.loading_total}]"
+
         status_right = " q:quit j/k:move g/G:top/bot r:refresh f:full v:browser ?:help "
 
         # Calculate spacing
@@ -399,7 +510,7 @@ class JiraTUI:
         status = status_left + " " * max(0, padding) + status_right
 
         try:
-            stdscr.addstr(y, 0, status[:width], curses.A_REVERSE)
+            stdscr.addstr(y, 0, status[:width - 1], curses.A_REVERSE)
         except curses.error:
             pass
 
@@ -500,15 +611,15 @@ class JiraTUI:
         return ansi_escape.sub('', text)
 
     def _wrap_text(self, text: str, width: int) -> List[str]:
-        """Simple text wrapping."""
+        """Wrap text respecting word boundaries."""
+        if not text:
+            return ['']
+
         if len(text) <= width:
             return [text]
 
-        lines = []
-        while text:
-            lines.append(text[:width])
-            text = text[width:]
-        return lines
+        # Use textwrap for proper word-boundary wrapping
+        return textwrap.wrap(text, width=width, break_long_words=True, break_on_hyphens=False)
 
     def _open_in_browser(self, ticket_key: str):
         """Open ticket in browser using xdg-open."""
