@@ -32,6 +32,7 @@ class JiraTUI:
         self.use_colors = use_colors
         self.show_full = True  # Toggle for full mode (all comments/history)
         self.ticket_cache = {}  # Cache for full ticket details
+        self.transitions_cache = {}  # Cache for available transitions per ticket
         self.loading_complete = False  # Track if background loading is done
         self.loading_count = 0  # Track how many tickets loaded
         self.loading_total = 0  # Track total tickets to load
@@ -260,6 +261,24 @@ class JiraTUI:
                     tickets = self._filter_tickets(tickets, search_query)
                     selected_idx = 0
                     scroll_offset = 0
+            elif key == ord('t') or key == ord('T'):  # Transition
+                if tickets:
+                    current_key = tickets[selected_idx].get('key')
+                    self._handle_transition(stdscr, current_key, height, width)
+                    # Refresh current ticket after transition
+                    full_ticket = self.viewer.fetch_ticket_details(current_key)
+                    if full_ticket:
+                        with self.loading_lock:
+                            self.ticket_cache[current_key] = full_ticket
+            elif key == ord('c') or key == ord('C'):  # Comment
+                if tickets:
+                    current_key = tickets[selected_idx].get('key')
+                    self._handle_comment(stdscr, current_key, height, width)
+                    # Refresh current ticket after comment
+                    full_ticket = self.viewer.fetch_ticket_details(current_key)
+                    if full_ticket:
+                        with self.loading_lock:
+                            self.ticket_cache[current_key] = full_ticket
             elif key == ord('?'):  # Help
                 show_help = True
 
@@ -291,6 +310,17 @@ class JiraTUI:
         """Fetch a single ticket's full details."""
         return self.viewer.fetch_ticket_details(ticket_key)
 
+    def _fetch_transitions(self, ticket_key: str) -> List[dict]:
+        """Fetch available transitions for a ticket."""
+        try:
+            endpoint = f"/issue/{ticket_key}/transitions"
+            response = self.viewer.utils.call_jira_api(endpoint)
+            if response and 'transitions' in response:
+                return response['transitions']
+        except Exception:
+            pass
+        return []
+
     def _load_tickets_background(self, tickets: List[dict]) -> None:
         """Background thread to load ticket details with parallel fetching."""
         max_workers = 5  # Fetch up to 5 tickets concurrently
@@ -312,6 +342,9 @@ class JiraTUI:
                         with self.loading_lock:
                             self.ticket_cache[ticket_key] = full_ticket
                             self.loading_count += 1
+
+                        # Fetch transitions for this ticket (don't wait for it)
+                        executor.submit(self._cache_transitions, ticket_key)
                 except Exception:
                     # Skip failed tickets
                     pass
@@ -319,6 +352,172 @@ class JiraTUI:
         # Mark loading as complete
         with self.loading_lock:
             self.loading_complete = True
+
+    def _cache_transitions(self, ticket_key: str) -> None:
+        """Cache transitions for a ticket."""
+        transitions = self._fetch_transitions(ticket_key)
+        with self.loading_lock:
+            self.transitions_cache[ticket_key] = transitions
+
+    def _handle_transition(self, stdscr, ticket_key: str, height: int, width: int):
+        """Handle ticket transition (T key)."""
+        # Get transitions from cache or fetch
+        with self.loading_lock:
+            transitions = self.transitions_cache.get(ticket_key)
+
+        if transitions is None:
+            transitions = self._fetch_transitions(ticket_key)
+
+        if not transitions:
+            self._show_message(stdscr, "No transitions available", height, width)
+            return
+
+        # Draw transition selection overlay
+        overlay_height = min(len(transitions) + 4, height - 4)
+        overlay_width = min(60, width - 4)
+        start_y = (height - overlay_height) // 2
+        start_x = (width - overlay_width) // 2
+
+        # Create window for overlay
+        try:
+            overlay = curses.newwin(overlay_height, overlay_width, start_y, start_x)
+            overlay.box()
+            overlay.addstr(0, 2, " Select Transition ", curses.A_BOLD)
+
+            # List transitions
+            for idx, transition in enumerate(transitions[:overlay_height - 4], 1):
+                name = transition.get('name', 'Unknown')
+                overlay.addstr(idx + 1, 2, f"{idx}. {name[:overlay_width - 6]}")
+
+            overlay.addstr(overlay_height - 2, 2, "Enter number or q to cancel: ")
+            overlay.refresh()
+
+            # Get user input
+            curses.echo()
+            input_str = ""
+            while True:
+                ch = overlay.getch()
+                if ch == ord('q') or ch == 27:  # q or ESC
+                    curses.noecho()
+                    return
+                elif ch == ord('\n'):
+                    break
+                elif ch in [curses.KEY_BACKSPACE, 127, 8]:
+                    input_str = input_str[:-1]
+                elif chr(ch).isdigit():
+                    input_str += chr(ch)
+
+            curses.noecho()
+
+            # Perform transition
+            try:
+                choice = int(input_str)
+                if 1 <= choice <= len(transitions):
+                    transition = transitions[choice - 1]
+                    transition_id = transition.get('id')
+
+                    # Call Jira API to perform transition
+                    endpoint = f"/issue/{ticket_key}/transitions"
+                    payload = {"transition": {"id": transition_id}}
+                    response = self.viewer.utils.call_jira_api(endpoint, method='POST', data=payload)
+
+                    if response is not None:
+                        self._show_message(stdscr, f"✓ Transitioned to {transition.get('name')}", height, width)
+                    else:
+                        self._show_message(stdscr, "✗ Transition failed", height, width)
+                else:
+                    self._show_message(stdscr, "Invalid choice", height, width)
+            except (ValueError, KeyError):
+                self._show_message(stdscr, "Invalid input", height, width)
+
+        except curses.error:
+            pass
+
+    def _handle_comment(self, stdscr, ticket_key: str, height: int, width: int):
+        """Handle adding a comment (C key)."""
+        import tempfile
+        import subprocess
+
+        # Get ticket details for context
+        with self.loading_lock:
+            ticket = self.ticket_cache.get(ticket_key)
+
+        if not ticket:
+            ticket = self.viewer.fetch_ticket_details(ticket_key)
+
+        if not ticket:
+            self._show_message(stdscr, "Failed to load ticket", height, width)
+            return
+
+        # Create temp file with ticket info as comments
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+            temp_path = f.name
+            fields = ticket.get('fields', {})
+
+            f.write(f"# Ticket: {ticket_key}\n")
+            f.write(f"# Summary: {fields.get('summary', '')}\n")
+            f.write(f"# Status: {fields.get('status', {}).get('name', '')}\n")
+            f.write(f"# Assignee: {fields.get('assignee', {}).get('displayName', 'Unassigned')}\n")
+            f.write(f"#\n")
+            f.write(f"# Enter your comment below (lines starting with # will be ignored):\n")
+            f.write(f"#\n")
+            f.write("\n")
+
+        # Open vim editor
+        curses.def_prog_mode()
+        curses.endwin()
+
+        try:
+            subprocess.call(['vim', temp_path])
+        finally:
+            curses.reset_prog_mode()
+            stdscr.refresh()
+
+        # Read comment from file
+        try:
+            with open(temp_path, 'r') as f:
+                lines = f.readlines()
+
+            # Remove comment lines and empty trailing lines
+            comment_lines = [line.rstrip() for line in lines if not line.strip().startswith('#')]
+            comment_text = '\n'.join(comment_lines).strip()
+
+            # Clean up temp file
+            import os
+            os.unlink(temp_path)
+
+            if not comment_text:
+                self._show_message(stdscr, "Comment cancelled (empty)", height, width)
+                return
+
+            # Post comment via Jira API
+            endpoint = f"/issue/{ticket_key}/comment"
+            payload = {"body": comment_text}
+            response = self.viewer.utils.call_jira_api(endpoint, method='POST', data=payload)
+
+            if response is not None:
+                self._show_message(stdscr, "✓ Comment added", height, width)
+            else:
+                self._show_message(stdscr, "✗ Failed to add comment", height, width)
+
+        except Exception as e:
+            self._show_message(stdscr, f"✗ Error: {str(e)}", height, width)
+
+    def _show_message(self, stdscr, message: str, height: int, width: int):
+        """Show a temporary message overlay."""
+        msg_width = min(len(message) + 4, width - 4)
+        msg_height = 3
+        start_y = (height - msg_height) // 2
+        start_x = (width - msg_width) // 2
+
+        try:
+            overlay = curses.newwin(msg_height, msg_width, start_y, start_x)
+            overlay.box()
+            overlay.addstr(1, 2, message[:msg_width - 4])
+            overlay.refresh()
+            curses.napms(1500)  # Show for 1.5 seconds
+        except curses.error:
+            pass
 
     def _draw_ticket_list(self, stdscr, tickets: List[dict], selected_idx: int,
                          scroll_offset: int, max_height: int, max_width: int,
@@ -523,7 +722,7 @@ class JiraTUI:
             if not self.loading_complete:
                 status_left += f" [Loading {self.loading_count}/{self.loading_total}]"
 
-        status_right = " q:quit j/k:move g/G:top/bot r:refresh f:full v:browser ?:help "
+        status_right = " q:quit j/k:move g/G:top/bot r:refresh t:transition c:comment v:browser ?:help "
 
         # Calculate spacing
         padding = width - len(status_left) - len(status_right)
@@ -549,6 +748,8 @@ class JiraTUI:
             "  r          Refresh current view",
             "  f          Toggle full mode (all comments)",
             "  v          Open ticket in browser",
+            "  t          Transition ticket",
+            "  c          Add comment to ticket",
             "  /          Search/filter tickets",
             "  ?          Show this help",
             "  q          Quit",
