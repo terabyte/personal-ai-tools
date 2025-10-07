@@ -10,6 +10,7 @@ import subprocess
 import webbrowser
 import textwrap
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Optional
 from pathlib import Path
 
@@ -286,15 +287,34 @@ class JiraTUI:
             issues = self.viewer.utils.fetch_all_jql_results(query_or_ticket, fields, max_items=100)
             return issues, False
 
+    def _fetch_single_ticket(self, ticket_key: str) -> Optional[dict]:
+        """Fetch a single ticket's full details."""
+        return self.viewer.fetch_ticket_details(ticket_key)
+
     def _load_tickets_background(self, tickets: List[dict]) -> None:
-        """Background thread to load ticket details."""
-        for ticket in tickets:
-            ticket_key = ticket.get('key')
-            full_ticket = self.viewer.fetch_ticket_details(ticket_key)
-            if full_ticket:
-                with self.loading_lock:
-                    self.ticket_cache[ticket_key] = full_ticket
-                    self.loading_count += 1
+        """Background thread to load ticket details with parallel fetching."""
+        max_workers = 5  # Fetch up to 5 tickets concurrently
+
+        # Use thread pool to fetch tickets in parallel
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # Submit all fetch tasks
+            future_to_key = {
+                executor.submit(self._fetch_single_ticket, ticket.get('key')): ticket.get('key')
+                for ticket in tickets if ticket.get('key')
+            }
+
+            # Process results as they complete
+            for future in as_completed(future_to_key):
+                ticket_key = future_to_key[future]
+                try:
+                    full_ticket = future.result()
+                    if full_ticket:
+                        with self.loading_lock:
+                            self.ticket_cache[ticket_key] = full_ticket
+                            self.loading_count += 1
+                except Exception:
+                    # Skip failed tickets
+                    pass
 
         # Mark loading as complete
         with self.loading_lock:
