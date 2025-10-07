@@ -35,6 +35,7 @@ Custom field IDs vary between Jira instances. Use the `jira-discover-fields` too
 - **jira-export** - Exports Jira tickets with full history and custom fields to JSON for AI analysis (run with `--help-ai` for detailed usage)
 - **jira-api** - Bash wrapper for Jira REST API with cross-platform authentication (includes comprehensive usage docs and field IDs in script)
 - **jira-discover-fields** - Discover custom field IDs in your Jira instance (essential for configuration)
+- **jira-view** - Interactive ticket viewer with color-coded formatting - view individual tickets or query and select from results
 - **confluence-api** - Bash wrapper for Confluence REST API with cross-platform authentication (includes comprehensive usage docs in script)
 - **calendar-link** - Generates Google Calendar event URLs from command line parameters with optional browser integration
 - **gitlab-api** - Bash wrapper for GitLab REST API with keychain authentication
@@ -153,6 +154,49 @@ project IN (PROJ1,PROJ2) AND sprint is EMPTY AND statusCategory != Done AND stat
 
 **Status Names (exact case):**
 - `"Pending Triage"`, `"on Backlog"`, `"In Progress"`, `"Pending Review"`, `"Done"`, `"Closed"`, `"Blocked"`
+
+### Jira View (`jira-view`)
+- **Interactive TUI**: Split-pane terminal interface with vim keybindings for browsing tickets
+- **Color-coded display**: Status indicators, priorities, and relative timestamps with visual formatting
+- **Smart comments**: Shows last 2 days of comments by default (minimum 10)
+- **Full mode**: `--full` flag includes all comments and complete change history
+- **Dense but readable**: Formatted descriptions, bullet lists, and code blocks
+- **Graceful fallback**: Works in basic mode when curses is unavailable
+
+**Examples:**
+```bash
+# View a single ticket
+jira-view PLAT-1234
+
+# View with colors (auto-detects by default)
+jira-view PLAT-1234 --color
+
+# View with all comments and history
+jira-view PLAT-1234 --full
+
+# Query and select interactively
+jira-view "project=PLAT AND status='In Progress'"
+
+# Query with ordering
+jira-view "project=PLAT AND assignee=currentUser() ORDER BY updated DESC"
+
+# Complex queries
+jira-view "project IN (PLAT,BACKEND) AND sprint='Sprint 123' AND status NOT IN (Done,Closed)"
+```
+
+**Interactive TUI mode:**
+When given a JQL query, jira-view displays a split-pane interface with vim keybindings:
+- **Left pane**: Scrollable list of matching tickets (key + status + summary)
+- **Right pane**: Full ticket details for currently selected ticket
+- **Navigation**: `j`/`k` or arrow keys to move up/down, `g`/`G` for top/bottom
+- **Actions**: `v` to open in browser, `f` to toggle full mode (all comments), `r` to refresh
+- **Search**: `/` to filter tickets, `?` for help, `q` to quit
+- **Auto-scrolling**: Selection automatically scrolls list to keep current ticket visible
+
+**Features:**
+- **Relative timestamps**: Shows "2d ago", "5h ago" with color coding (green < 2d, yellow 2-4d)
+- **JQL hints**: Suggests fixes for common JQL syntax mistakes (e.g., relative date formats)
+- **Graceful fallback**: Runs in basic mode when curses is unavailable (shows first result only)
 
 ### Confluence API (`confluence-api`)
 - **Space-specific searches**: Use `space=SPACEKEY` parameter for better results

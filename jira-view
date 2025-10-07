@@ -1,0 +1,484 @@
+#!/usr/bin/env python3
+
+"""
+Jira Viewer - View tickets or query results with interactive TUI
+Usage: jira-view TICKET-123           # View a single ticket
+       jira-view "JQL query"          # Interactive TUI with vim keybindings
+"""
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+from datetime import datetime, timezone, timedelta
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
+from jira_utils import JiraUtils
+from jira_tui import JiraTUI
+
+
+class JiraViewer:
+    def __init__(self):
+        self.script_dir = Path(__file__).parent
+        self.utils = JiraUtils(self.script_dir)
+
+    def is_ticket_key(self, arg: str) -> bool:
+        """Check if argument looks like a ticket key (PROJECT-123)."""
+        return bool(re.match(r'^[A-Z][A-Z0-9]+-\d+$', arg))
+
+    def fetch_ticket_details(self, ticket_key: str) -> Optional[dict]:
+        """Fetch full ticket details including comments and history."""
+        fields = [
+            'key', 'summary', 'description', 'status', 'priority', 'assignee',
+            'reporter', 'created', 'updated', 'resolutiondate', 'duedate',
+            'issuetype', 'labels', 'components', 'fixVersions', 'comment',
+            'customfield_10061',  # Story points
+            'customfield_10021',  # Sprint
+            'parent'  # Parent issue for subtasks
+        ]
+        fields_str = ','.join(fields)
+
+        # Get ticket with comments
+        endpoint = f"/issue/{ticket_key}?fields={fields_str}&expand=changelog"
+        response = self.utils.call_jira_api(endpoint)
+
+        return response
+
+    def format_description(self, description_obj, use_colors: bool, indent: str = "  ") -> str:
+        """Format Jira ADF (Atlassian Document Format) description to readable text."""
+        if not description_obj:
+            return f"{indent}(No description)"
+
+        def extract_text(node) -> str:
+            """Recursively extract text from ADF node."""
+            if isinstance(node, str):
+                return node
+
+            if isinstance(node, dict):
+                node_type = node.get('type')
+                content = node.get('content', [])
+                text_value = node.get('text', '')
+
+                # Handle marks (bold, italic, code, etc)
+                marks = node.get('marks', [])
+                has_code = any(m.get('type') == 'code' for m in marks)
+
+                if text_value:
+                    if has_code and use_colors:
+                        return f'\033[36m`{text_value}`\033[0m'
+                    return text_value
+
+                # Handle different node types
+                if node_type == 'paragraph':
+                    return ''.join(extract_text(c) for c in content)
+                elif node_type == 'heading':
+                    level = node.get('attrs', {}).get('level', 1)
+                    heading_text = ''.join(extract_text(c) for c in content)
+                    if use_colors:
+                        return f'\033[1;34m{"#" * level} {heading_text}\033[0m'
+                    return f'{"#" * level} {heading_text}'
+                elif node_type == 'bulletList':
+                    items = []
+                    for item in content:
+                        item_text = extract_text(item)
+                        if item_text:
+                            items.append(f'{indent}  • {item_text}')
+                    return '\n'.join(items)
+                elif node_type == 'orderedList':
+                    items = []
+                    for i, item in enumerate(content, 1):
+                        item_text = extract_text(item)
+                        if item_text:
+                            items.append(f'{indent}  {i}. {item_text}')
+                    return '\n'.join(items)
+                elif node_type == 'listItem':
+                    return ''.join(extract_text(c) for c in content)
+                elif node_type == 'codeBlock':
+                    code_text = ''.join(extract_text(c) for c in content)
+                    if use_colors:
+                        return f'\033[90m{indent}  {code_text}\033[0m'
+                    return f'{indent}  {code_text}'
+                elif node_type == 'hardBreak':
+                    return '\n'
+                elif node_type == 'inlineCard':
+                    url = node.get('attrs', {}).get('url', '')
+                    return url
+                elif node_type == 'doc':
+                    lines = []
+                    for c in content:
+                        text = extract_text(c)
+                        if text and text.strip():
+                            # Add proper indentation to each line
+                            for line in text.split('\n'):
+                                if line.strip():
+                                    lines.append(f'{indent}{line}')
+                    return '\n'.join(lines)
+                else:
+                    # Default: just concatenate content
+                    return ''.join(extract_text(c) for c in content)
+
+            return ''
+
+        result = extract_text(description_obj)
+        return result if result.strip() else f"{indent}(No description)"
+
+    def format_comment(self, comment: dict, use_colors: bool) -> str:
+        """Format a single comment with author and timestamp."""
+        author_data = comment.get('author', {})
+        author_name = self.utils.get_assignee_name(author_data) or author_data.get('displayName', 'Unknown')
+
+        created_str = comment.get('created', '')
+        created_formatted = self.format_datetime(created_str)
+
+        body = comment.get('body', {})
+        body_text = self.format_description(body, use_colors, indent="    ")
+
+        if use_colors:
+            header = f'\033[1;33m  {author_name}\033[0m \033[90m({created_formatted})\033[0m'
+        else:
+            header = f'  {author_name} ({created_formatted})'
+
+        return f'{header}\n{body_text}'
+
+    def format_datetime(self, dt_str: str) -> str:
+        """Format ISO datetime to readable format."""
+        try:
+            if dt_str.count(':') == 2 and ('+' in dt_str[-5:] or '-' in dt_str[-5:]):
+                dt_str = dt_str[:-2] + ':' + dt_str[-2:]
+            dt = datetime.fromisoformat(dt_str)
+            return dt.strftime('%Y-%m-%d %H:%M')
+        except:
+            return dt_str
+
+    def filter_recent_comments(self, comments: List[dict], days: int = 2, min_count: int = 10) -> List[dict]:
+        """Filter comments to recent ones (last N days or minimum count)."""
+        if not comments:
+            return []
+
+        threshold = datetime.now(timezone.utc) - timedelta(days=days)
+        recent = []
+
+        for comment in comments:
+            created_str = comment.get('created', '')
+            try:
+                if created_str.count(':') == 2 and ('+' in created_str[-5:] or '-' in created_str[-5:]):
+                    created_str = created_str[:-2] + ':' + created_str[-2:]
+                created_dt = datetime.fromisoformat(created_str)
+                if created_dt.astimezone(timezone.utc) >= threshold:
+                    recent.append(comment)
+            except:
+                continue
+
+        # If we don't have enough recent comments, return last N comments
+        if len(recent) < min_count:
+            return comments[-min_count:] if len(comments) >= min_count else comments
+
+        return recent
+
+    def format_history_entry(self, history_item: dict, use_colors: bool) -> List[str]:
+        """Format a changelog history entry."""
+        author_data = history_item.get('author', {})
+        author_name = self.utils.get_assignee_name(author_data) or author_data.get('displayName', 'Unknown')
+
+        created_str = history_item.get('created', '')
+        created_formatted = self.format_datetime(created_str)
+
+        items = history_item.get('items', [])
+        if not items:
+            return []
+
+        lines = []
+        if use_colors:
+            header = f'\033[1;35m  {author_name}\033[0m \033[90m({created_formatted})\033[0m'
+        else:
+            header = f'  {author_name} ({created_formatted})'
+        lines.append(header)
+
+        for item in items:
+            field = item.get('field', 'unknown')
+            from_val = item.get('fromString', '(none)')
+            to_val = item.get('toString', '(none)')
+
+            if use_colors:
+                lines.append(f'    \033[36m{field}\033[0m: {from_val} → {to_val}')
+            else:
+                lines.append(f'    {field}: {from_val} → {to_val}')
+
+        return lines
+
+    def display_ticket(self, ticket: dict, use_colors: bool, show_full: bool = False) -> None:
+        """Display formatted ticket details."""
+        fields = ticket.get('fields', {})
+        key = ticket.get('key', 'N/A')
+
+        # Header
+        summary = fields.get('summary', 'No summary')
+        status = fields.get('status', {}).get('name', 'Unknown')
+        issue_type = fields.get('issuetype', {}).get('name', 'Unknown')
+
+        if use_colors:
+            print(f'\033[1;32m{key}\033[0m - \033[1m{summary}\033[0m')
+            print(f'\033[90m{issue_type}\033[0m | {self.utils.format_status_indicator(status, use_colors)}')
+        else:
+            print(f'{key} - {summary}')
+            print(f'{issue_type} | [{status}]')
+
+        print()
+
+        # Key fields
+        assignee = fields.get('assignee')
+        assignee_name = self.utils.get_assignee_name(assignee) or assignee.get('displayName', 'Unassigned') if assignee else 'Unassigned'
+
+        reporter = fields.get('reporter', {})
+        reporter_name = self.utils.get_assignee_name(reporter) or reporter.get('displayName', 'Unknown')
+
+        priority = fields.get('priority', {}).get('name', 'None')
+        story_points = self.utils.format_story_points(fields.get('customfield_10061'))
+
+        created = self.format_datetime(fields.get('created', ''))
+        created_days, created_text = self.utils.calculate_days_since_update(fields.get('created', ''))
+        created_relative = self.utils.format_days_with_color(created_days, created_text, use_colors)
+
+        updated = self.format_datetime(fields.get('updated', ''))
+        updated_days, updated_text = self.utils.calculate_days_since_update(fields.get('updated', ''))
+        updated_relative = self.utils.format_days_with_color(updated_days, updated_text, use_colors)
+
+        if use_colors:
+            print(f'\033[1mAssignee:\033[0m   {assignee_name}')
+            print(f'\033[1mReporter:\033[0m   {reporter_name}')
+            print(f'\033[1mPriority:\033[0m   {priority}')
+            print(f'\033[1mStory Pts:\033[0m  {story_points}')
+            print(f'\033[1mCreated:\033[0m    {created} {created_relative}')
+            print(f'\033[1mUpdated:\033[0m    {updated} {updated_relative}')
+        else:
+            print(f'Assignee:   {assignee_name}')
+            print(f'Reporter:   {reporter_name}')
+            print(f'Priority:   {priority}')
+            print(f'Story Pts:  {story_points}')
+            print(f'Created:    {created} {created_relative}')
+            print(f'Updated:    {updated} {updated_relative}')
+
+        # Due date if present
+        due_date = fields.get('duedate')
+        if due_date:
+            if use_colors:
+                print(f'\033[1mDue Date:\033[0m   \033[31m{due_date}\033[0m')
+            else:
+                print(f'Due Date:   {due_date}')
+
+        # Sprint if present
+        sprint_info = self.utils.get_sprint_info(fields)
+        if sprint_info:
+            sprint_name = sprint_info.strip('[]').replace('Sprint=', '')
+            if use_colors:
+                print(f'\033[1mSprint:\033[0m     \033[36m{sprint_name}\033[0m')
+            else:
+                print(f'Sprint:     {sprint_name}')
+
+        # Parent (for subtasks)
+        parent = fields.get('parent')
+        if parent:
+            parent_key = parent.get('key', '')
+            parent_summary = parent.get('fields', {}).get('summary', '')
+            if use_colors:
+                print(f'\033[1mParent:\033[0m     \033[34m{parent_key}\033[0m - {parent_summary}')
+            else:
+                print(f'Parent:     {parent_key} - {parent_summary}')
+
+        # Labels
+        labels = fields.get('labels', [])
+        if labels:
+            labels_str = ', '.join(labels)
+            if use_colors:
+                print(f'\033[1mLabels:\033[0m     \033[35m{labels_str}\033[0m')
+            else:
+                print(f'Labels:     {labels_str}')
+
+        # Components
+        components = fields.get('components', [])
+        if components:
+            comp_names = ', '.join(c.get('name', '') for c in components)
+            if use_colors:
+                print(f'\033[1mComponents:\033[0m {comp_names}')
+            else:
+                print(f'Components: {comp_names}')
+
+        print()
+
+        # Description
+        description = fields.get('description')
+        if use_colors:
+            print('\033[1;34m──── Description ────\033[0m')
+        else:
+            print('──── Description ────')
+        print(self.format_description(description, use_colors))
+        print()
+
+        # Comments
+        comments_data = fields.get('comment', {})
+        all_comments = comments_data.get('comments', [])
+
+        if all_comments:
+            if show_full:
+                comments_to_show = all_comments
+                if use_colors:
+                    print(f'\033[1;34m──── All Comments ({len(all_comments)}) ────\033[0m')
+                else:
+                    print(f'──── All Comments ({len(all_comments)}) ────')
+            else:
+                comments_to_show = self.filter_recent_comments(all_comments)
+                if use_colors:
+                    print(f'\033[1;34m──── Recent Comments ({len(comments_to_show)}/{len(all_comments)}) ────\033[0m')
+                else:
+                    print(f'──── Recent Comments ({len(comments_to_show)}/{len(all_comments)}) ────')
+
+            for comment in comments_to_show:
+                print(self.format_comment(comment, use_colors))
+                print()
+        else:
+            if use_colors:
+                print('\033[1;34m──── Comments ────\033[0m')
+            else:
+                print('──── Comments ────')
+            print('  (No comments)')
+            print()
+
+        # History (only if --full)
+        if show_full:
+            changelog = ticket.get('changelog', {})
+            histories = changelog.get('histories', [])
+
+            if histories:
+                if use_colors:
+                    print(f'\033[1;34m──── Change History ({len(histories)}) ────\033[0m')
+                else:
+                    print(f'──── Change History ({len(histories)}) ────')
+
+                for history in histories:
+                    lines = self.format_history_entry(history, use_colors)
+                    for line in lines:
+                        print(line)
+                    print()
+
+    def display_jql_results(self, query: str, use_colors: bool) -> None:
+        """Display JQL query results and allow selection."""
+        # Fetch results
+        fields = ['key', 'summary', 'status', 'priority', 'assignee', 'updated',
+                  'customfield_10061', 'customfield_10021']
+
+        print(f'Searching: {query}')
+        print()
+
+        issues = self.utils.fetch_all_jql_results(query, fields, max_items=100)
+
+        if not issues:
+            print('No results found.')
+            # Provide helpful hints for common JQL syntax mistakes
+            if '>' in query and 'd' in query and '-' not in query:
+                print('\n💡 Tip: For relative dates in JQL, use negative values (e.g., "updated >= -2d" for last 2 days)')
+            elif '<' in query and 'd' in query and '-' not in query:
+                print('\n💡 Tip: For relative dates in JQL, use negative values (e.g., "created >= -7d" for last week)')
+            return
+
+        # Display list
+        terminal_width = self.utils.get_terminal_width()
+        summary_length = self.utils.calculate_summary_length(terminal_width, reserved_space=60)
+
+        print(f'Found {len(issues)} tickets:\n')
+
+        for idx, issue in enumerate(issues, 1):
+            line = self.utils.format_ticket_line(issue, idx, summary_length, use_colors,
+                                                  show_sprint=False, show_status=True)
+            print(line)
+
+        # Interactive selection
+        print()
+        try:
+            selection = input('Enter ticket number to view (or press Enter to exit): ').strip()
+
+            if not selection:
+                return
+
+            try:
+                ticket_num = int(selection)
+                if 1 <= ticket_num <= len(issues):
+                    selected_issue = issues[ticket_num - 1]
+                    selected_key = selected_issue.get('key')
+
+                    print()
+                    print('─' * 80)
+                    print()
+
+                    # Fetch and display full ticket
+                    ticket = self.fetch_ticket_details(selected_key)
+                    if ticket:
+                        self.display_ticket(ticket, use_colors, show_full=False)
+                else:
+                    print(f'Invalid selection. Please enter a number between 1 and {len(issues)}.')
+            except ValueError:
+                print('Invalid input. Please enter a number.')
+        except (KeyboardInterrupt, EOFError):
+            print()
+            return
+
+    def run(self, args) -> int:
+        """Main execution."""
+        use_colors = self.utils.determine_colors(args)
+
+        query_or_ticket = args.query_or_ticket
+
+        # Determine if it's a ticket key or JQL query
+        if self.is_ticket_key(query_or_ticket):
+            # View single ticket
+            ticket = self.fetch_ticket_details(query_or_ticket)
+            if not ticket:
+                print(f'❌ Failed to fetch ticket: {query_or_ticket}', file=sys.stderr)
+                return 1
+
+            self.display_ticket(ticket, use_colors, show_full=args.full)
+        else:
+            # JQL query - use interactive TUI
+            tui = JiraTUI(self, use_colors)
+            return tui.run(query_or_ticket)
+
+        return 0
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description='View Jira tickets or query results with interactive TUI',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  jira-view CIPLAT-2250                                    # View a single ticket
+  jira-view "project=CIPLAT AND status='In Progress'"     # Interactive TUI mode
+  jira-view CIPLAT-2250 --full                            # View with all comments
+
+Interactive TUI keybindings (JQL queries only):
+  j/k or ↓/↑   Move up/down in ticket list
+  g/G          Jump to top/bottom
+  v            Open current ticket in browser
+  f            Toggle full mode (all comments)
+  r            Refresh view
+  /            Search/filter tickets
+  ?            Show help
+  q            Quit
+        """
+    )
+
+    parser.add_argument('query_or_ticket', help='Ticket key (PROJECT-123) or JQL query')
+    parser.add_argument('--full', action='store_true', help='Show all comments and change history')
+    parser.add_argument('-c', '--color', action='store_true', help='Force enable colors')
+    parser.add_argument('--no-color', action='store_true', help='Force disable colors')
+
+    args = parser.parse_args()
+
+    viewer = JiraViewer()
+    return viewer.run(args)
+
+
+if __name__ == '__main__':
+    sys.exit(main())
