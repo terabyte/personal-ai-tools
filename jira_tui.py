@@ -326,14 +326,36 @@ class JiraTUI:
                     current_key = tickets[selected_idx].get('key')
                     self._open_in_browser(current_key)
             elif key == ord('/'):  # Search
+                # Remember current ticket key before filtering
+                current_ticket_key = tickets[selected_idx].get('key') if tickets and selected_idx < len(tickets) else None
+
                 search_query = self._get_search_input(stdscr, height - 1, width)
+
                 # Filter tickets by search query or restore full list if empty
                 if search_query:
                     tickets = self._filter_tickets(all_tickets, search_query)
+                    selected_idx = 0
+                    scroll_offset = 0
                 else:
+                    # Restore full list and try to re-select the same ticket
                     tickets = all_tickets
-                selected_idx = 0
-                scroll_offset = 0
+                    if current_ticket_key:
+                        # Find the ticket in the full list
+                        for i, ticket in enumerate(tickets):
+                            if ticket.get('key') == current_ticket_key:
+                                selected_idx = i
+                                break
+                        else:
+                            selected_idx = 0
+                    else:
+                        selected_idx = 0
+
+                    # Adjust scroll to keep selected item visible
+                    visible_height = self._get_visible_height(height)
+                    if selected_idx < scroll_offset:
+                        scroll_offset = selected_idx
+                    elif selected_idx >= scroll_offset + visible_height:
+                        scroll_offset = max(0, selected_idx - visible_height + 1)
             elif key == ord('t') or key == ord('T'):  # Transition
                 if tickets:
                     current_key = tickets[selected_idx].get('key')
