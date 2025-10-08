@@ -11,7 +11,7 @@ import webbrowser
 import textwrap
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import List, Optional
+from typing import List, Optional, Tuple
 from pathlib import Path
 
 # Try to import curses, gracefully handle if not available
@@ -639,6 +639,30 @@ class JiraTUI:
         # height - 2 (status bar) - 1 (header) - legend_lines - 1 (separator)
         return height - 4 - self.legend_lines
 
+    def _format_date_with_relative(self, date_str: str) -> Tuple[str, str, int]:
+        """Format date with relative time. Returns (date_str, relative_str, color_pair)."""
+        if not date_str:
+            return ('N/A', '', 0)
+
+        try:
+            # Parse the date
+            date_only = date_str.split('T')[0] if 'T' in date_str else date_str
+
+            # Calculate relative time
+            days, days_text = self.viewer.utils.calculate_days_since_update(date_str)
+
+            # Determine color based on days
+            if days < 2:
+                color_pair = 1  # Green
+            elif days <= 4:
+                color_pair = 2  # Yellow
+            else:
+                color_pair = 0  # Normal
+
+            return (date_only, days_text, color_pair)
+        except Exception:
+            return (date_str, '', 0)
+
     def _draw_ticket_list(self, stdscr, tickets: List[dict], selected_idx: int,
                          scroll_offset: int, max_height: int, max_width: int,
                          search_query: str):
@@ -744,6 +768,13 @@ class JiraTUI:
         assignee = fields.get('assignee')
         assignee_name = self.viewer.utils.get_assignee_name(assignee) if assignee else 'Unassigned'
         priority = fields.get('priority', {}).get('name', 'None')
+        reporter = fields.get('reporter')
+        reporter_name = reporter.get('displayName', 'Unknown') if reporter else 'Unknown'
+        created_str = fields.get('created', '')
+        updated_str = fields.get('updated', '')
+        labels = fields.get('labels', [])
+        parent = fields.get('parent')
+        issuelinks = fields.get('issuelinks', [])
 
         # Draw content line by line
         y = 0
@@ -759,7 +790,57 @@ class JiraTUI:
         lines.append(("", ""))
         lines.append((f"STATUS_{status_letter}", f" Status: {status}"[:max_width - 2]))
         lines.append(("", f" Assignee: {assignee_name}"[:max_width - 2]))
+        lines.append(("", f" Reporter: {reporter_name}"[:max_width - 2]))
         lines.append((f"PRIORITY_{priority}", f" Priority: {priority}"[:max_width - 2]))
+
+        # Created date with relative time
+        created_date, created_rel, created_color = self._format_date_with_relative(created_str)
+        created_line = f" Created: {created_date}"
+        if created_rel:
+            created_line += f" ({created_rel})"
+        lines.append((f"DATE_{created_color}", created_line[:max_width - 2]))
+
+        # Updated date with relative time
+        updated_date, updated_rel, updated_color = self._format_date_with_relative(updated_str)
+        updated_line = f" Updated: {updated_date}"
+        if updated_rel:
+            updated_line += f" ({updated_rel})"
+        lines.append((f"DATE_{updated_color}", updated_line[:max_width - 2]))
+
+        # Labels
+        if labels:
+            labels_str = ', '.join(labels)
+            lines.append(("", f" Labels: {labels_str}"[:max_width - 2]))
+
+        # Parent
+        if parent:
+            parent_key = parent.get('key', 'Unknown')
+            parent_summary = parent.get('fields', {}).get('summary', '')
+            parent_text = f"{parent_key}: {parent_summary}" if parent_summary else parent_key
+            lines.append(("", f" Parent: {parent_text}"[:max_width - 2]))
+
+        # Linked issues
+        if issuelinks:
+            lines.append(("", f" Linked: {len(issuelinks)} issue(s)"[:max_width - 2]))
+            for link in issuelinks[:5]:  # Show first 5 linked issues
+                link_type = link.get('type', {}).get('name', 'Unknown')
+                # Check if it's an inward or outward link
+                if 'inwardIssue' in link:
+                    linked_issue = link['inwardIssue']
+                    direction = link.get('type', {}).get('inward', '')
+                elif 'outwardIssue' in link:
+                    linked_issue = link['outwardIssue']
+                    direction = link.get('type', {}).get('outward', '')
+                else:
+                    continue
+
+                linked_key = linked_issue.get('key', 'Unknown')
+                linked_summary = linked_issue.get('fields', {}).get('summary', '')
+                link_text = f"  {direction}: {linked_key}"
+                if linked_summary:
+                    link_text += f" - {linked_summary}"
+                lines.append(("", link_text[:max_width - 2]))
+
         lines.append(("", ""))
 
         # Description
@@ -849,6 +930,15 @@ class JiraTUI:
                     attr = curses.color_pair(3)  # Blue
                 else:
                     attr = curses.A_NORMAL  # Medium/None
+            elif tag.startswith("DATE_"):
+                # Map relative date to color
+                color_num = tag.split("_")[1]
+                if color_num == '1':
+                    attr = curses.color_pair(1)  # Green (< 2 days)
+                elif color_num == '2':
+                    attr = curses.color_pair(2)  # Yellow (2-4 days)
+                else:
+                    attr = curses.A_NORMAL  # Normal (> 4 days)
             else:
                 attr = curses.A_NORMAL
 
