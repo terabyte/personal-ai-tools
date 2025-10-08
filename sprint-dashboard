@@ -145,6 +145,77 @@ class TeamDashboard:
         else:
             return f'({days_text})'
 
+    def format_sprint_dates(self, start_date_str: Optional[str], end_date_str: Optional[str], use_colors: bool) -> str:
+        """Format sprint start and end dates with relative time and color coding."""
+        try:
+            now = datetime.now(timezone.utc)
+            parts = []
+
+            # Parse and format start date
+            if start_date_str:
+                start_dt = self.parse_jira_date(start_date_str)
+                if start_dt:
+                    days_since_start = (now - start_dt).days
+                    if days_since_start < 0:
+                        # Sprint hasn't started yet
+                        days_until_start = abs(days_since_start)
+                        start_text = f"starts in {days_until_start}d" if days_until_start > 0 else "starts today"
+                        if use_colors:
+                            start_text = f'\033[33m{start_text}\033[0m'  # Yellow for future
+                    elif days_since_start == 0:
+                        start_text = "started today"
+                        if use_colors:
+                            start_text = f'\033[32m{start_text}\033[0m'  # Green for today
+                    else:
+                        start_text = f"{days_since_start}d ago"
+                        if use_colors and days_since_start < 3:
+                            start_text = f'\033[32m{start_text}\033[0m'  # Green for recent
+                    parts.append(f"Start Date: {start_dt.strftime('%Y-%m-%d')} ({start_text})")
+
+            # Parse and format end date
+            if end_date_str:
+                end_dt = self.parse_jira_date(end_date_str)
+                if end_dt:
+                    days_until_end = (end_dt - now).days
+                    if days_until_end < 0:
+                        # Sprint has ended
+                        days_since_end = abs(days_until_end)
+                        end_text = f"ended {days_since_end}d ago"
+                        if use_colors:
+                            end_text = f'\033[31m{end_text}\033[0m'  # Red for ended
+                    elif days_until_end == 0:
+                        end_text = "ends today"
+                        if use_colors:
+                            end_text = f'\033[31m{end_text}\033[0m'  # Red for urgency
+                    else:
+                        end_text = f"{days_until_end}d from now"
+                        if use_colors:
+                            if days_until_end <= 2:
+                                end_text = f'\033[31m{end_text}\033[0m'  # Red if < 3 days
+                            elif days_until_end <= 5:
+                                end_text = f'\033[33m{end_text}\033[0m'  # Yellow if 3-5 days
+                            else:
+                                end_text = f'\033[32m{end_text}\033[0m'  # Green if > 5 days
+                    parts.append(f"End Date: {end_dt.strftime('%Y-%m-%d')} ({end_text})")
+
+            return "   " + "  ".join(parts) if parts else ""
+        except Exception:
+            return ""
+
+    def parse_jira_date(self, date_str: str) -> Optional[datetime]:
+        """Parse a Jira date string into a datetime object."""
+        try:
+            # Handle timezone format variations
+            if date_str.count(':') == 2 and ('+' in date_str[-5:] or '-' in date_str[-5:]):
+                # Add colon to timezone: -0500 -> -05:00
+                date_str = date_str[:-2] + ':' + date_str[-2:]
+            elif date_str.endswith('Z'):
+                date_str = date_str[:-1] + '+00:00'
+
+            return datetime.fromisoformat(date_str).astimezone(timezone.utc)
+        except Exception:
+            return None
+
     def format_status_indicator(self, status_name: str, use_colors: bool) -> str:
         """Format status indicator with appropriate colors."""
         # Map status to single letter indicators
@@ -328,8 +399,10 @@ class TeamDashboard:
                  'updated', 'created', 'customfield_10021', 'duedate']
         issues = self.utils.fetch_all_jql_results(sprint_jql, fields, max_items=200)
 
-        # Determine sprint state from issues
+        # Determine sprint state and dates from issues
         sprint_state = None
+        sprint_start_date = None
+        sprint_end_date = None
         if issues and sprint_name:
             for issue in issues:
                 fields_data = issue.get('fields', {})
@@ -344,6 +417,10 @@ class TeamDashboard:
                             sprint_state = 'future'
                         elif raw_state == 'closed':
                             sprint_state = 'closed'
+
+                        # Extract start and end dates
+                        sprint_start_date = sprint.get('startDate')
+                        sprint_end_date = sprint.get('endDate')
                         break
                 if sprint_state:
                     break
@@ -413,6 +490,13 @@ class TeamDashboard:
             pts_str = f"{total_story_points} pts"
         state_suffix = f" [{sprint_state}]" if sprint_state else ""
         print(f"{sprint_header}{state_suffix} ({total_tickets} tickets, {pts_str})")
+
+        # Show sprint start and end dates with relative time
+        if sprint_start_date or sprint_end_date:
+            date_line = self.format_sprint_dates(sprint_start_date, sprint_end_date, use_colors)
+            if date_line:
+                print(date_line)
+
         print("=" * 60)
         print()
 
