@@ -671,8 +671,17 @@ class JiraTUI:
         # Get full ticket details from cache
         ticket = self.ticket_cache.get(ticket_key)
         if not ticket:
+            # Check if still loading or actually failed
+            with self.loading_lock:
+                still_loading = not self.loading_complete
+
             try:
-                stdscr.addstr(1, x_offset + 2, "Failed to load ticket details")
+                if still_loading:
+                    stdscr.addstr(1, x_offset + 2, "Loading ticket details, please wait...")
+                    stdscr.addstr(3, x_offset + 2, "(If this doesn't load shortly, try 'r' to refresh)")
+                else:
+                    stdscr.addstr(1, x_offset + 2, "Failed to load ticket details")
+                    stdscr.addstr(3, x_offset + 2, "(Try 'r' to refresh)")
             except curses.error:
                 pass
             return
