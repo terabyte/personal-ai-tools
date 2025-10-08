@@ -64,7 +64,7 @@ class JiraUtils:
             print(f"❌ Error calling Jira API: {e}", file=sys.stderr)
             return None
 
-    def fetch_all_jql_results(self, jql: str, fields: List[str], max_items: int = 1000) -> List[dict]:
+    def fetch_all_jql_results(self, jql: str, fields: List[str], max_items: int = 1000, expand: Optional[str] = None) -> List[dict]:
         """Fetch all results for a JQL query using proper nextPageToken pagination."""
         jql_encoded = jql.replace(' ', '%20').replace('"', '%22')
         fields_str = ','.join(fields)
@@ -78,6 +78,10 @@ class JiraUtils:
                 endpoint = f"/search/jql?jql={jql_encoded}&fields={fields_str}&maxResults={max_results}&nextPageToken={next_page_token}"
             else:
                 endpoint = f"/search/jql?jql={jql_encoded}&fields={fields_str}&maxResults={max_results}"
+
+            # Add expand parameter if provided
+            if expand:
+                endpoint += f"&expand={expand}"
 
             response = self.call_jira_api(endpoint)
             if not response:

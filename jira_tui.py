@@ -160,24 +160,24 @@ class JiraTUI:
             stdscr.getch()
             return 0
 
-        # Load first ticket synchronously for immediate display
-        stdscr.addstr(0, 0, "Loading first ticket...")
+        # Cache all tickets immediately (we already have full data from JQL query)
+        stdscr.addstr(0, 0, "Loading tickets...")
         stdscr.refresh()
-        first_ticket_key = tickets[0].get('key')
-        first_ticket = self.viewer.fetch_ticket_details(first_ticket_key)
-        if first_ticket:
-            with self.loading_lock:
-                self.ticket_cache[first_ticket_key] = first_ticket
-                self.loading_count = 1
 
-        # Start background thread to load remaining tickets
-        self.loading_total = len(tickets)
-        self.loading_complete = False
-        if len(tickets) > 1:
-            thread = threading.Thread(target=self._load_tickets_background, args=(tickets[1:],), daemon=True)
-            thread.start()
-        else:
+        with self.loading_lock:
+            for ticket in tickets:
+                ticket_key = ticket.get('key')
+                if ticket_key:
+                    # Store the full ticket data (already includes all fields from JQL query)
+                    self.ticket_cache[ticket_key] = ticket
+            self.loading_count = len(tickets)
+            self.loading_total = len(tickets)
             self.loading_complete = True
+
+        # Start background thread to cache transitions for all tickets (for T key feature)
+        if tickets:
+            thread = threading.Thread(target=self._load_transitions_background, args=(tickets,), daemon=True)
+            thread.start()
 
         stdscr.clear()
 
@@ -293,31 +293,24 @@ class JiraTUI:
                 elif selected_idx >= scroll_offset + visible_height:
                     scroll_offset = selected_idx - visible_height + 1
 
-                # Clear cache and reset loading state
+                # Clear cache and cache all tickets immediately
+                stdscr.addstr(0, 0, "Refreshing tickets...")
+                stdscr.refresh()
+
                 self.ticket_cache.clear()
                 with self.loading_lock:
-                    self.loading_complete = False
-                    self.loading_count = 0
+                    for ticket in tickets:
+                        ticket_key = ticket.get('key')
+                        if ticket_key:
+                            self.ticket_cache[ticket_key] = ticket
+                    self.loading_count = len(tickets)
                     self.loading_total = len(tickets)
+                    self.loading_complete = True
 
-                # Load current ticket first (synchronously)
-                current_ticket_key = tickets[selected_idx].get('key')
-                stdscr.addstr(0, 0, "Refreshing current ticket...")
-                stdscr.refresh()
-                current_ticket = self.viewer.fetch_ticket_details(current_ticket_key)
-                if current_ticket:
-                    with self.loading_lock:
-                        self.ticket_cache[current_ticket_key] = current_ticket
-                        self.loading_count = 1
-
-                # Load remaining tickets in background
-                remaining_tickets = [t for t in tickets if t.get('key') != current_ticket_key]
-                if remaining_tickets:
-                    thread = threading.Thread(target=self._load_tickets_background, args=(remaining_tickets,), daemon=True)
+                # Reload transitions in background
+                if tickets:
+                    thread = threading.Thread(target=self._load_transitions_background, args=(tickets,), daemon=True)
                     thread.start()
-                else:
-                    with self.loading_lock:
-                        self.loading_complete = True
             elif key == ord('f'):  # Toggle full mode
                 self.show_full = not self.show_full
             elif key == ord('v'):  # Open in browser
@@ -370,10 +363,15 @@ class JiraTUI:
                         'fields': ticket.get('fields', {})}], True
             return [], True
         else:
-            # JQL query
-            fields = ['key', 'summary', 'status', 'priority', 'assignee', 'updated',
-                     'customfield_10061', 'customfield_10021']
-            issues = self.viewer.utils.fetch_all_jql_results(query_or_ticket, fields)
+            # JQL query - fetch all fields needed for detail view to avoid per-ticket API calls
+            fields = [
+                'key', 'summary', 'status', 'priority', 'assignee', 'updated',
+                'customfield_10061',  # Story points
+                'customfield_10021',  # Sprint
+                'description', 'reporter', 'created', 'issuetype', 'labels',
+                'parent', 'issuelinks', 'comment'
+            ]
+            issues = self.viewer.utils.fetch_all_jql_results(query_or_ticket, fields, expand='changelog')
             return issues, False
 
     def _fetch_single_ticket(self, ticket_key: str) -> Optional[dict]:
@@ -428,6 +426,17 @@ class JiraTUI:
         transitions = self._fetch_transitions(ticket_key)
         with self.loading_lock:
             self.transitions_cache[ticket_key] = transitions
+
+    def _load_transitions_background(self, tickets: List[dict]) -> None:
+        """Background thread to load transitions for all tickets."""
+        max_workers = 5  # Fetch up to 5 transitions concurrently
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # Submit all transition fetch tasks
+            for ticket in tickets:
+                ticket_key = ticket.get('key')
+                if ticket_key:
+                    executor.submit(self._cache_transitions, ticket_key)
 
     def _handle_transition(self, stdscr, ticket_key: str, height: int, width: int):
         """Handle ticket transition (T key)."""
