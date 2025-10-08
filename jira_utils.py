@@ -49,15 +49,24 @@ class JiraUtils:
         else:
             return available_space
 
-    def call_jira_api(self, endpoint: str) -> Optional[dict]:
+    def call_jira_api(self, endpoint: str, method: str = "GET", data: Optional[dict] = None) -> Optional[dict]:
         """Call jira-api script and return parsed JSON response."""
         try:
-            cmd = [str(self.jira_api), "GET", endpoint]
+            cmd = [str(self.jira_api), method, endpoint]
+
+            # Add JSON data if provided (for POST/PUT requests)
+            if data is not None:
+                cmd.extend(['-d', json.dumps(data)])
+
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
 
             if result.returncode != 0:
                 print(f"❌ Jira API call failed: {result.stderr}", file=sys.stderr)
                 return None
+
+            # Some POST requests return empty response (e.g., transitions)
+            if not result.stdout.strip():
+                return {}
 
             return json.loads(result.stdout)
         except (subprocess.TimeoutExpired, json.JSONDecodeError, Exception) as e:
