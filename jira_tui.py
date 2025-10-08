@@ -80,7 +80,7 @@ class JiraTUI:
             fields = ['key', 'summary', 'status', 'priority', 'assignee', 'updated',
                       'customfield_10061', 'customfield_10021']
 
-            issues = self.viewer.utils.fetch_all_jql_results(query_or_ticket, fields, max_items=100)
+            issues = self.viewer.utils.fetch_all_jql_results(query_or_ticket, fields)
 
             if not issues:
                 print('No results found.')
@@ -338,7 +338,7 @@ class JiraTUI:
             # JQL query
             fields = ['key', 'summary', 'status', 'priority', 'assignee', 'updated',
                      'customfield_10061', 'customfield_10021']
-            issues = self.viewer.utils.fetch_all_jql_results(query_or_ticket, fields, max_items=100)
+            issues = self.viewer.utils.fetch_all_jql_results(query_or_ticket, fields)
             return issues, False
 
     def _fetch_single_ticket(self, ticket_key: str) -> Optional[dict]:
