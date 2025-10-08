@@ -374,6 +374,43 @@ class JiraTUI:
                     if full_ticket:
                         with self.loading_lock:
                             self.ticket_cache[current_key] = full_ticket
+            elif key == ord('n') or key == ord('N'):  # New issue
+                new_ticket_key = self._handle_new_issue(stdscr, current_query, height, width)
+                if new_ticket_key:
+                    # Switch to viewing the new ticket
+                    new_query = new_ticket_key
+                    stdscr.addstr(0, 0, f"Loading {new_ticket_key}...")
+                    stdscr.refresh()
+
+                    try:
+                        tickets, single_ticket_mode = self._fetch_tickets(new_query)
+                        if tickets:
+                            # Reset state
+                            current_query = new_query
+                            all_tickets = tickets
+                            selected_idx = 0
+                            scroll_offset = 0
+                            search_query = ""
+
+                            # Clear caches
+                            self.ticket_cache.clear()
+                            self.transitions_cache.clear()
+
+                            # Cache all tickets immediately
+                            with self.loading_lock:
+                                for ticket in tickets:
+                                    ticket_key = ticket.get('key')
+                                    if ticket_key:
+                                        self.ticket_cache[ticket_key] = ticket
+                                self.loading_count = len(tickets)
+                                self.loading_total = len(tickets)
+                                self.loading_complete = True
+
+                            # Restart background transition loading
+                            thread = threading.Thread(target=self._load_transitions_background, args=(tickets,), daemon=True)
+                            thread.start()
+                    except Exception as e:
+                        self._show_message(stdscr, f"✗ Error loading new ticket: {str(e)}", height, width)
             elif key == ord('s'):  # New query
                 is_edit_mode = False
                 new_query = self._handle_query_change(stdscr, current_query, is_edit_mode, height, width)
@@ -699,6 +736,62 @@ class JiraTUI:
         except Exception as e:
             self._show_message(stdscr, f"✗ Error: {str(e)}", height, width)
 
+    def _handle_new_issue(self, stdscr, current_query: str, height: int, width: int) -> Optional[str]:
+        """Handle creating a new issue (n key). Returns new ticket key or None."""
+        import tempfile
+        import subprocess
+        import os
+
+        # Extract project from current query or default to CIPLAT
+        project = self._extract_project_from_query(current_query) or "CIPLAT"
+
+        error_message = None
+        while True:
+            # Create template
+            template = self._create_issue_template(project, error_message)
+
+            # Write to temp file
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+                temp_path = f.name
+                f.write(template)
+
+            # Open vim editor
+            curses.def_prog_mode()
+            curses.endwin()
+
+            try:
+                subprocess.call(['vim', temp_path])
+            finally:
+                curses.reset_prog_mode()
+                stdscr.refresh()
+
+            # Read and parse result
+            try:
+                with open(temp_path, 'r') as f:
+                    template_text = f.read()
+
+                os.unlink(temp_path)
+
+                # Parse fields
+                fields = self._parse_issue_template(template_text)
+                if not fields:
+                    self._show_message(stdscr, "Issue creation cancelled (empty)", height, width)
+                    return None
+
+                # Create issue
+                success, result = self._create_jira_issue(fields)
+                if success:
+                    self._show_message(stdscr, f"✓ Created issue: {result}", height, width)
+                    return result
+                else:
+                    # Show error and loop to retry
+                    error_message = result
+                    # Continue loop to re-open editor with error
+
+            except Exception as e:
+                error_message = f"Unexpected error: {str(e)}"
+                # Continue loop to re-open editor with error
+
     def _handle_query_change(self, stdscr, current_query: str, is_edit_mode: bool, height: int, width: int) -> Optional[str]:
         """Handle changing the query (s/S key). Returns new query or None if cancelled."""
         import tempfile
@@ -792,6 +885,177 @@ class JiraTUI:
             "version": 1,
             "content": content
         }
+
+    def _extract_project_from_query(self, query: str) -> Optional[str]:
+        """Extract project key from JQL query or ticket key."""
+        import re
+
+        # Check if it's a ticket key (e.g., "CIPLAT-1234")
+        ticket_match = re.match(r'^([A-Z]+)-\d+', query)
+        if ticket_match:
+            return ticket_match.group(1)
+
+        # Check for "project = KEY" or "project=KEY"
+        project_match = re.search(r'project\s*=\s*["\']?([A-Z]+)["\']?', query, re.IGNORECASE)
+        if project_match:
+            return project_match.group(1)
+
+        # Check for "project IN (KEY1, KEY2)"
+        project_in_match = re.search(r'project\s+IN\s*\(\s*([A-Z, ]+)\)', query, re.IGNORECASE)
+        if project_in_match:
+            projects = [p.strip().strip('"\'') for p in project_in_match.group(1).split(',')]
+            if projects:
+                return projects[0]  # Return first project
+
+        return None
+
+    def _create_issue_template(self, project: str, error_message: Optional[str] = None) -> str:
+        """Create template for new issue creation."""
+        template = []
+
+        if error_message:
+            template.append(f"# ERROR: {error_message}")
+            template.append("#")
+
+        template.extend([
+            "# Create new Jira issue",
+            "# Lines starting with # are ignored",
+            "# Required fields must have values",
+            "# Multi-line fields end with __END_OF_FIELDNAME__",
+            "#",
+            "# Issue Types: Task, Bug, New Feature, Improvement",
+            "# Priorities: Critical, High, Medium, Low",
+            "#",
+            "",
+            f"project: {project}",
+            "summary: ",
+            "issuetype: Task",
+            "",
+            "description:",
+            "",
+            "__END_OF_DESCRIPTION__",
+            "",
+            "# Optional fields (uncomment to use):",
+            "# assignee: currentUser()",
+            "# priority: Medium",
+            "# labels: ",
+            "# story_points: ",
+            "# epic_link: ",
+            ""
+        ])
+
+        return '\n'.join(template)
+
+    def _parse_issue_template(self, template_text: str) -> Optional[dict]:
+        """Parse issue template into field dict. Returns None if empty/cancelled."""
+        lines = template_text.split('\n')
+        fields = {}
+        current_field = None
+        current_value = []
+
+        for line in lines:
+            # Skip comment lines
+            if line.strip().startswith('#'):
+                continue
+
+            # Check for multi-line field end marker
+            if line.strip().startswith('__END_OF_'):
+                if current_field:
+                    fields[current_field] = '\n'.join(current_value).strip()
+                    current_field = None
+                    current_value = []
+                continue
+
+            # Check for field: value line
+            if ':' in line and not current_field:
+                key, value = line.split(':', 1)
+                key = key.strip()
+                value = value.strip()
+
+                # Check if this is a multi-line field (ends with empty value or no value)
+                if key in ['description'] and not value:
+                    current_field = key
+                    current_value = []
+                elif value:
+                    fields[key] = value
+            elif current_field:
+                # Accumulate multi-line field content
+                current_value.append(line)
+
+        # Check if template is effectively empty (only has comments/whitespace)
+        if not fields or all(not v for v in fields.values()):
+            return None
+
+        return fields
+
+    def _create_jira_issue(self, fields: dict) -> tuple:
+        """Create Jira issue from parsed fields. Returns (success, ticket_key_or_error_message)."""
+        # Map issuetype names to IDs
+        issuetype_map = {
+            'task': '10009',
+            'bug': '10017',
+            'new feature': '11081',
+            'improvement': '11078',
+            'epic': '10000'
+        }
+
+        # Validate required fields
+        required = ['project', 'summary', 'issuetype']
+        for field in required:
+            if field not in fields or not fields[field]:
+                return (False, f"Missing required field: {field}")
+
+        # Build API payload
+        issuetype_name = fields['issuetype'].lower()
+        issuetype_id = issuetype_map.get(issuetype_name)
+        if not issuetype_id:
+            return (False, f"Unknown issue type: {fields['issuetype']}. Options: Task, Bug, New Feature, Improvement")
+
+        payload = {
+            "fields": {
+                "project": {"key": fields['project']},
+                "summary": fields['summary'],
+                "issuetype": {"id": issuetype_id}
+            }
+        }
+
+        # Add description (convert to ADF if present)
+        if 'description' in fields and fields['description']:
+            payload['fields']['description'] = self._text_to_adf(fields['description'])
+
+        # Add optional fields
+        if 'assignee' in fields and fields['assignee']:
+            # Handle currentUser() specially
+            if fields['assignee'] == 'currentUser()':
+                payload['fields']['assignee'] = {"accountId": None}  # Will use current user
+            else:
+                payload['fields']['assignee'] = {"accountId": fields['assignee']}
+
+        if 'priority' in fields and fields['priority']:
+            payload['fields']['priority'] = {"name": fields['priority']}
+
+        if 'labels' in fields and fields['labels']:
+            labels = [l.strip() for l in fields['labels'].split(',')]
+            payload['fields']['labels'] = labels
+
+        if 'story_points' in fields and fields['story_points']:
+            try:
+                payload['fields']['customfield_10061'] = int(fields['story_points'])
+            except ValueError:
+                return (False, f"Invalid story points value: {fields['story_points']}")
+
+        if 'epic_link' in fields and fields['epic_link']:
+            payload['fields']['customfield_10014'] = fields['epic_link']
+
+        # Call API
+        try:
+            response = self.viewer.utils.call_jira_api('/issue', method='POST', data=payload)
+            if response and 'key' in response:
+                return (True, response['key'])
+            else:
+                return (False, "API call failed - no ticket key in response")
+        except Exception as e:
+            return (False, f"API error: {str(e)}")
 
     def _show_message(self, stdscr, message: str, height: int, width: int):
         """Show a temporary message overlay."""
@@ -1254,6 +1518,7 @@ class JiraTUI:
             "  v          Open ticket in browser",
             "  t          Transition ticket",
             "  c          Add comment to ticket",
+            "  n          Create new issue",
             "  s          New query (JQL or ticket key)",
             "  S          Edit current query",
             "  /          Search/filter tickets",
