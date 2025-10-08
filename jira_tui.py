@@ -614,8 +614,8 @@ class JiraTUI:
 
             f.write(f"# Ticket: {ticket_key}\n")
             f.write(f"# Summary: {fields.get('summary', '')}\n")
-            f.write(f"# Status: {fields.get('status', {}).get('name', '')}\n")
-            f.write(f"# Assignee: {fields.get('assignee', {}).get('displayName', 'Unassigned')}\n")
+            f.write(f"# Status: {(fields.get('status') or {}).get('name', '')}\n")
+            f.write(f"# Assignee: {(fields.get('assignee') or {}).get('displayName', 'Unassigned')}\n")
             f.write(f"#\n")
             f.write(f"# Enter your comment below (lines starting with # will be ignored):\n")
             f.write(f"#\n")
