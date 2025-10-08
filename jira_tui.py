@@ -10,6 +10,8 @@ import subprocess
 import webbrowser
 import textwrap
 import threading
+import signal
+import atexit
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Optional, Tuple
 from pathlib import Path
@@ -40,6 +42,25 @@ class JiraTUI:
         self.legend_lines = 0  # Track how many lines the legend occupies
         self.detail_scroll_offset = 0  # Track right pane scroll position
         self.detail_total_lines = 0  # Track total lines in right pane
+        self.curses_initialized = False  # Track if curses is active
+        self._original_sigint_handler = None  # Store original signal handler
+
+    def _cleanup_curses(self):
+        """Ensure curses is properly cleaned up."""
+        if CURSES_AVAILABLE and self.curses_initialized:
+            try:
+                curses.endwin()
+                self.curses_initialized = False
+            except:
+                pass
+
+    def _sigint_handler(self, signum, frame):
+        """Handle Ctrl+C gracefully."""
+        self._cleanup_curses()
+        # Restore original handler and re-raise
+        if self._original_sigint_handler:
+            signal.signal(signal.SIGINT, self._original_sigint_handler)
+        sys.exit(0)
 
     def run(self, query_or_ticket: str) -> int:
         """
@@ -54,13 +75,24 @@ class JiraTUI:
         if not CURSES_AVAILABLE:
             return self._run_fallback(query_or_ticket)
 
+        # Register cleanup handlers
+        atexit.register(self._cleanup_curses)
+        self._original_sigint_handler = signal.signal(signal.SIGINT, self._sigint_handler)
+
         try:
             return curses.wrapper(self._curses_main, query_or_ticket)
         except KeyboardInterrupt:
+            self._cleanup_curses()
             return 0
         except Exception as e:
+            self._cleanup_curses()
             print(f"❌ Error in TUI: {e}", file=sys.stderr)
             return 1
+        finally:
+            # Restore original signal handler
+            if self._original_sigint_handler:
+                signal.signal(signal.SIGINT, self._original_sigint_handler)
+            atexit.unregister(self._cleanup_curses)
 
     def _run_fallback(self, query_or_ticket: str) -> int:
         """Fallback mode when curses is not available - show first ticket."""
@@ -99,6 +131,9 @@ class JiraTUI:
 
     def _curses_main(self, stdscr, query_or_ticket: str):
         """Main curses loop."""
+        # Mark curses as initialized
+        self.curses_initialized = True
+
         # Initialize curses
         curses.curs_set(0)  # Hide cursor
         stdscr.timeout(100)  # Non-blocking input with 100ms timeout
