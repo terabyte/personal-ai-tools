@@ -183,6 +183,7 @@ class JiraTUI:
 
         # State management
         current_query = query_or_ticket
+        all_tickets = tickets  # Unfiltered list for search/restore
         selected_idx = 0
         scroll_offset = 0
         search_query = ""
@@ -284,7 +285,8 @@ class JiraTUI:
                 scroll_offset = max(0, len(tickets) - visible_height)
                 self.detail_scroll_offset = 0
             elif key == ord('r'):  # Refresh
-                tickets, _ = self._fetch_tickets(query_or_ticket)
+                all_tickets, _ = self._fetch_tickets(query_or_ticket)
+                tickets = all_tickets
                 selected_idx = min(selected_idx, len(tickets) - 1)
 
                 # Adjust scroll position to keep selected item visible
@@ -300,22 +302,22 @@ class JiraTUI:
 
                 self.ticket_cache.clear()
                 with self.loading_lock:
-                    for ticket in tickets:
+                    for ticket in all_tickets:
                         ticket_key = ticket.get('key')
                         if ticket_key:
                             self.ticket_cache[ticket_key] = ticket
-                    self.loading_count = len(tickets)
-                    self.loading_total = len(tickets)
+                    self.loading_count = len(all_tickets)
+                    self.loading_total = len(all_tickets)
                     self.loading_complete = True
 
                 # Reload transitions in background
-                if tickets:
-                    thread = threading.Thread(target=self._load_transitions_background, args=(tickets,), daemon=True)
+                if all_tickets:
+                    thread = threading.Thread(target=self._load_transitions_background, args=(all_tickets,), daemon=True)
                     thread.start()
 
                 # Re-apply search filter if active
                 if search_query:
-                    tickets = self._filter_tickets(tickets, search_query)
+                    tickets = self._filter_tickets(all_tickets, search_query)
                     selected_idx = min(selected_idx, len(tickets) - 1)
             elif key == ord('f'):  # Toggle full mode
                 self.show_full = not self.show_full
@@ -325,11 +327,13 @@ class JiraTUI:
                     self._open_in_browser(current_key)
             elif key == ord('/'):  # Search
                 search_query = self._get_search_input(stdscr, height - 1, width)
-                # Filter tickets by search query
+                # Filter tickets by search query or restore full list if empty
                 if search_query:
-                    tickets = self._filter_tickets(tickets, search_query)
-                    selected_idx = 0
-                    scroll_offset = 0
+                    tickets = self._filter_tickets(all_tickets, search_query)
+                else:
+                    tickets = all_tickets
+                selected_idx = 0
+                scroll_offset = 0
             elif key == ord('t') or key == ord('T'):  # Transition
                 if tickets:
                     current_key = tickets[selected_idx].get('key')
@@ -361,6 +365,7 @@ class JiraTUI:
                         if tickets:
                             # Reset state
                             current_query = new_query
+                            all_tickets = tickets
                             selected_idx = 0
                             scroll_offset = 0
                             search_query = ""
@@ -401,6 +406,7 @@ class JiraTUI:
                         if tickets:
                             # Reset state
                             current_query = new_query
+                            all_tickets = tickets
                             selected_idx = 0
                             scroll_offset = 0
                             search_query = ""
