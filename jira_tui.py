@@ -38,6 +38,8 @@ class JiraTUI:
         self.loading_total = 0  # Track total tickets to load
         self.loading_lock = threading.Lock()  # Thread-safe cache updates
         self.legend_lines = 0  # Track how many lines the legend occupies
+        self.detail_scroll_offset = 0  # Track right pane scroll position
+        self.detail_total_lines = 0  # Track total lines in right pane
 
     def run(self, query_or_ticket: str) -> int:
         """
@@ -207,19 +209,32 @@ class JiraTUI:
                     visible_height = self._get_visible_height(height)
                     if selected_idx >= scroll_offset + visible_height:
                         scroll_offset = selected_idx - visible_height + 1
+                    # Reset detail scroll when changing tickets
+                    self.detail_scroll_offset = 0
             elif key == ord('k') or key == curses.KEY_UP:  # Up
                 if selected_idx > 0:
                     selected_idx -= 1
                     # Auto-scroll if needed
                     if selected_idx < scroll_offset:
                         scroll_offset = selected_idx
+                    # Reset detail scroll when changing tickets
+                    self.detail_scroll_offset = 0
+            elif key == 10:  # Ctrl+J - Scroll detail pane down
+                detail_height = height - 2
+                if self.detail_scroll_offset + detail_height < self.detail_total_lines:
+                    self.detail_scroll_offset += 1
+            elif key == 11:  # Ctrl+K - Scroll detail pane up
+                if self.detail_scroll_offset > 0:
+                    self.detail_scroll_offset -= 1
             elif key == ord('g'):  # Go to top
                 selected_idx = 0
                 scroll_offset = 0
+                self.detail_scroll_offset = 0
             elif key == ord('G'):  # Go to bottom
                 selected_idx = len(tickets) - 1
                 visible_height = self._get_visible_height(height)
                 scroll_offset = max(0, len(tickets) - visible_height)
+                self.detail_scroll_offset = 0
             elif key == ord('r'):  # Refresh
                 tickets, _ = self._fetch_tickets(query_or_ticket)
                 selected_idx = min(selected_idx, len(tickets) - 1)
@@ -784,8 +799,13 @@ class JiraTUI:
                         lines.extend([("", f"  {l}") for l in wrapped])
                     lines.append(("", ""))
 
-        # Draw all lines (with scrolling support if needed)
-        for i, (tag, line) in enumerate(lines[:max_height - 1]):
+        # Store total lines for scroll tracking
+        self.detail_total_lines = len(lines)
+
+        # Draw visible lines with scrolling support
+        visible_lines = lines[self.detail_scroll_offset:self.detail_scroll_offset + max_height - 1]
+
+        for i, (tag, line) in enumerate(visible_lines):
             # Determine color based on tag
             if tag == "KEY":
                 attr = curses.color_pair(1) | curses.A_BOLD  # Green bold
@@ -825,6 +845,14 @@ class JiraTUI:
             except curses.error:
                 pass
 
+        # Show scroll indicator if content is scrolled
+        if self.detail_scroll_offset > 0 or self.detail_scroll_offset + max_height - 1 < self.detail_total_lines:
+            scroll_indicator = f"[{self.detail_scroll_offset + 1}-{min(self.detail_scroll_offset + max_height - 1, self.detail_total_lines)}/{self.detail_total_lines}]"
+            try:
+                stdscr.addstr(max_height - 1, x_offset + 1, scroll_indicator, curses.A_REVERSE)
+            except curses.error:
+                pass
+
     def _draw_status_bar(self, stdscr, y: int, width: int, current: int,
                         total: int, search_query: str):
         """Draw status bar at bottom showing commands and position."""
@@ -856,6 +884,8 @@ class JiraTUI:
             "  k / ↑      Move up in list",
             "  g          Jump to top",
             "  G          Jump to bottom",
+            "  Ctrl+J     Scroll detail pane down",
+            "  Ctrl+K     Scroll detail pane up",
             "",
             "Actions:",
             "  r          Refresh current view",
