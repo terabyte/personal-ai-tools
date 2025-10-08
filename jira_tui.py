@@ -312,6 +312,11 @@ class JiraTUI:
                 if tickets:
                     thread = threading.Thread(target=self._load_transitions_background, args=(tickets,), daemon=True)
                     thread.start()
+
+                # Re-apply search filter if active
+                if search_query:
+                    tickets = self._filter_tickets(tickets, search_query)
+                    selected_idx = min(selected_idx, len(tickets) - 1)
             elif key == ord('f'):  # Toggle full mode
                 self.show_full = not self.show_full
             elif key == ord('v'):  # Open in browser
@@ -358,6 +363,7 @@ class JiraTUI:
                             current_query = new_query
                             selected_idx = 0
                             scroll_offset = 0
+                            search_query = ""
 
                             # Clear caches
                             self.ticket_cache.clear()
@@ -397,6 +403,7 @@ class JiraTUI:
                             current_query = new_query
                             selected_idx = 0
                             scroll_offset = 0
+                            search_query = ""
 
                             # Clear caches
                             self.ticket_cache.clear()
