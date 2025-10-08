@@ -765,6 +765,7 @@ class JiraTUI:
         summary = fields.get('summary', 'No summary')
         status = fields.get('status', {}).get('name', 'Unknown')
         status_letter = self.viewer.utils.get_status_letter(status)
+        issue_type = fields.get('issuetype', {}).get('name', 'Unknown')
         assignee = fields.get('assignee')
         assignee_name = self.viewer.utils.get_assignee_name(assignee) if assignee else 'Unassigned'
         priority = fields.get('priority', {}).get('name', 'None')
@@ -789,6 +790,7 @@ class JiraTUI:
 
         lines.append(("", ""))
         lines.append((f"STATUS_{status_letter}", f" Status: {status}"[:max_width - 2]))
+        lines.append(("", f" Type: {issue_type}"[:max_width - 2]))
         lines.append(("", f" Assignee: {assignee_name}"[:max_width - 2]))
         lines.append(("", f" Reporter: {reporter_name}"[:max_width - 2]))
         lines.append((f"PRIORITY_{priority}", f" Priority: {priority}"[:max_width - 2]))
