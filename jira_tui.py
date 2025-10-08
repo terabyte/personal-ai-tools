@@ -613,8 +613,15 @@ class JiraTUI:
         # Draw legend
         legend_lines = self._draw_legend(stdscr, 1, max_width)
 
-        # Draw tickets (start after header + legend)
-        ticket_start_y = 1 + legend_lines
+        # Draw separator
+        separator_y = 1 + legend_lines
+        try:
+            stdscr.addstr(separator_y, 0, "=" * max_width)
+        except curses.error:
+            pass
+
+        # Draw tickets (start after header + legend + separator)
+        ticket_start_y = separator_y + 1
         visible_height = max_height - ticket_start_y
         for i in range(scroll_offset, min(scroll_offset + visible_height, len(tickets))):
             y = i - scroll_offset + ticket_start_y
