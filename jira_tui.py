@@ -226,6 +226,18 @@ class JiraTUI:
             elif key == 11:  # Ctrl+K - Scroll detail pane up
                 if self.detail_scroll_offset > 0:
                     self.detail_scroll_offset -= 1
+            elif key == 2:  # Ctrl+B - Scroll detail pane down half-page
+                detail_height = height - 2
+                half_page = max(1, detail_height // 2)
+                if self.detail_scroll_offset + detail_height < self.detail_total_lines:
+                    self.detail_scroll_offset = min(
+                        self.detail_scroll_offset + half_page,
+                        max(0, self.detail_total_lines - detail_height)
+                    )
+            elif key == 21:  # Ctrl+U - Scroll detail pane up half-page
+                detail_height = height - 2
+                half_page = max(1, detail_height // 2)
+                self.detail_scroll_offset = max(0, self.detail_scroll_offset - half_page)
             elif key == ord('g'):  # Go to top
                 selected_idx = 0
                 scroll_offset = 0
@@ -884,8 +896,10 @@ class JiraTUI:
             "  k / ↑      Move up in list",
             "  g          Jump to top",
             "  G          Jump to bottom",
-            "  Ctrl+J     Scroll detail pane down",
-            "  Ctrl+K     Scroll detail pane up",
+            "  Ctrl+J     Scroll detail pane down (1 line)",
+            "  Ctrl+K     Scroll detail pane up (1 line)",
+            "  Ctrl+B     Scroll detail pane down (half-page)",
+            "  Ctrl+U     Scroll detail pane up (half-page)",
             "",
             "Actions:",
             "  r          Refresh current view",
