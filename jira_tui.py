@@ -519,6 +519,84 @@ class JiraTUI:
         except curses.error:
             pass
 
+    def _get_legend_items(self):
+        """Get legend items with colors in the order they should appear."""
+        # Order: Blue (backlog), Yellow (active), Green (done), Red (blocked)
+        return [
+            # Blue - Backlog states
+            ('B', 'Backlog', 3),
+            ('A', 'Accepted', 3),
+            ('S', 'Scheduled', 3),
+            ('W', 'Wish List', 3),
+            # Yellow - Active states
+            ('T', 'Triage', 2),
+            ('P', 'In Progress', 2),
+            ('R', 'In Review', 2),
+            ('Q', 'Requirements', 2),
+            # Green - Done states
+            ('C', 'Done', 1),
+            ('V', 'Verification', 1),
+            ('Y', 'Deploy', 1),
+            ('M', 'Merge', 1),
+            ('Z', 'Closure', 1),
+            # Red - Blocked/Deferred states
+            ('D', 'Deferred', 4),
+            ('_', 'Abandoned', 4),
+            ('X', 'Blocked', 4),
+        ]
+
+    def _draw_legend(self, stdscr, start_y: int, max_width: int) -> int:
+        """Draw status legend at the top of the left pane. Returns number of lines used."""
+        legend_items = self._get_legend_items()
+
+        # Build legend with proper spacing
+        current_line = []
+        current_width = 0
+        lines = []
+
+        for letter, name, color_pair in legend_items:
+            # Format: [L] Name  (space between items)
+            item_text = f"[{letter}] {name}"
+            item_width = len(item_text) + 2  # +2 for spacing between items
+
+            # Check if this item fits on the current line
+            if current_width + item_width > max_width and current_line:
+                # Start a new line
+                lines.append(current_line)
+                current_line = []
+                current_width = 0
+
+            current_line.append((letter, name, color_pair))
+            current_width += item_width
+
+        # Add the last line
+        if current_line:
+            lines.append(current_line)
+
+        # Draw the lines
+        for line_idx, line_items in enumerate(lines):
+            y = start_y + line_idx
+            x = 0
+
+            for idx, (letter, name, color_pair) in enumerate(line_items):
+                try:
+                    # Draw [L] in color
+                    stdscr.addstr(y, x, f"[{letter}]", curses.color_pair(color_pair))
+                    x += len(f"[{letter}]")
+
+                    # Draw name
+                    stdscr.addstr(y, x, f" {name}", curses.A_NORMAL)
+                    x += len(f" {name}")
+
+                    # Add spacing between items (but not after the last one)
+                    if idx < len(line_items) - 1:
+                        stdscr.addstr(y, x, "  ", curses.A_NORMAL)
+                        x += 2
+                except curses.error:
+                    pass
+
+        return len(lines)
+
     def _draw_ticket_list(self, stdscr, tickets: List[dict], selected_idx: int,
                          scroll_offset: int, max_height: int, max_width: int,
                          search_query: str):
@@ -532,10 +610,14 @@ class JiraTUI:
         except curses.error:
             pass
 
-        # Draw tickets
-        visible_height = max_height - 1
+        # Draw legend
+        legend_lines = self._draw_legend(stdscr, 1, max_width)
+
+        # Draw tickets (start after header + legend)
+        ticket_start_y = 1 + legend_lines
+        visible_height = max_height - ticket_start_y
         for i in range(scroll_offset, min(scroll_offset + visible_height, len(tickets))):
-            y = i - scroll_offset + 1
+            y = i - scroll_offset + ticket_start_y
 
             issue = tickets[i]
             fields = issue.get('fields', {})
