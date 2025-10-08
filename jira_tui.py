@@ -648,9 +648,12 @@ class JiraTUI:
                 self._show_message(stdscr, "Comment cancelled (empty)", height, width)
                 return
 
+            # Convert plain text to Atlassian Document Format (ADF)
+            adf_body = self._text_to_adf(comment_text)
+
             # Post comment via Jira API
             endpoint = f"/issue/{ticket_key}/comment"
-            payload = {"body": comment_text}
+            payload = {"body": adf_body}
             response = self.viewer.utils.call_jira_api(endpoint, method='POST', data=payload)
 
             if response is not None:
@@ -718,6 +721,42 @@ class JiraTUI:
         except Exception as e:
             self._show_message(stdscr, f"✗ Error: {str(e)}", height, width)
             return None
+
+    def _text_to_adf(self, text: str) -> dict:
+        """Convert plain text to Atlassian Document Format (ADF)."""
+        # Split text into lines and create paragraph for each non-empty line
+        lines = text.split('\n')
+        content = []
+
+        for line in lines:
+            if line.strip():  # Non-empty line
+                content.append({
+                    "type": "paragraph",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": line
+                        }
+                    ]
+                })
+            else:  # Empty line - add empty paragraph for spacing
+                content.append({
+                    "type": "paragraph",
+                    "content": []
+                })
+
+        # Handle case where text is empty or only whitespace
+        if not content:
+            content = [{
+                "type": "paragraph",
+                "content": [{"type": "text", "text": ""}]
+            }]
+
+        return {
+            "type": "doc",
+            "version": 1,
+            "content": content
+        }
 
     def _show_message(self, stdscr, message: str, height: int, width: int):
         """Show a temporary message overlay."""
