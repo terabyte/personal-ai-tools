@@ -182,6 +182,7 @@ class JiraTUI:
         stdscr.clear()
 
         # State management
+        current_query = query_or_ticket
         selected_idx = 0
         scroll_offset = 0
         search_query = ""
@@ -342,6 +343,84 @@ class JiraTUI:
                     if full_ticket:
                         with self.loading_lock:
                             self.ticket_cache[current_key] = full_ticket
+            elif key == ord('s'):  # New query
+                is_edit_mode = False
+                new_query = self._handle_query_change(stdscr, current_query, is_edit_mode, height, width)
+                if new_query:
+                    # Re-fetch tickets with new query
+                    stdscr.addstr(0, 0, "Loading tickets...")
+                    stdscr.refresh()
+
+                    try:
+                        tickets, single_ticket_mode = self._fetch_tickets(new_query)
+                        if tickets:
+                            # Reset state
+                            current_query = new_query
+                            selected_idx = 0
+                            scroll_offset = 0
+
+                            # Clear caches
+                            self.ticket_cache.clear()
+                            self.transitions_cache.clear()
+
+                            # Cache all tickets immediately
+                            with self.loading_lock:
+                                for ticket in tickets:
+                                    ticket_key = ticket.get('key')
+                                    if ticket_key:
+                                        self.ticket_cache[ticket_key] = ticket
+                                self.loading_count = len(tickets)
+                                self.loading_total = len(tickets)
+                                self.loading_complete = True
+
+                            # Restart background transition loading
+                            thread = threading.Thread(target=self._load_transitions_background, args=(tickets,), daemon=True)
+                            thread.start()
+
+                            self._show_message(stdscr, f"✓ Loaded {len(tickets)} tickets", height, width)
+                        else:
+                            self._show_message(stdscr, "No tickets found", height, width)
+                    except Exception as e:
+                        self._show_message(stdscr, f"✗ Error: {str(e)}", height, width)
+            elif key == ord('S'):  # Edit query
+                is_edit_mode = True
+                new_query = self._handle_query_change(stdscr, current_query, is_edit_mode, height, width)
+                if new_query:
+                    # Re-fetch tickets with new query
+                    stdscr.addstr(0, 0, "Loading tickets...")
+                    stdscr.refresh()
+
+                    try:
+                        tickets, single_ticket_mode = self._fetch_tickets(new_query)
+                        if tickets:
+                            # Reset state
+                            current_query = new_query
+                            selected_idx = 0
+                            scroll_offset = 0
+
+                            # Clear caches
+                            self.ticket_cache.clear()
+                            self.transitions_cache.clear()
+
+                            # Cache all tickets immediately
+                            with self.loading_lock:
+                                for ticket in tickets:
+                                    ticket_key = ticket.get('key')
+                                    if ticket_key:
+                                        self.ticket_cache[ticket_key] = ticket
+                                self.loading_count = len(tickets)
+                                self.loading_total = len(tickets)
+                                self.loading_complete = True
+
+                            # Restart background transition loading
+                            thread = threading.Thread(target=self._load_transitions_background, args=(tickets,), daemon=True)
+                            thread.start()
+
+                            self._show_message(stdscr, f"✓ Loaded {len(tickets)} tickets", height, width)
+                        else:
+                            self._show_message(stdscr, "No tickets found", height, width)
+                    except Exception as e:
+                        self._show_message(stdscr, f"✗ Error: {str(e)}", height, width)
             elif key == ord('?'):  # Help
                 show_help = True
 
@@ -581,6 +660,64 @@ class JiraTUI:
 
         except Exception as e:
             self._show_message(stdscr, f"✗ Error: {str(e)}", height, width)
+
+    def _handle_query_change(self, stdscr, current_query: str, is_edit_mode: bool, height: int, width: int) -> Optional[str]:
+        """Handle changing the query (s/S key). Returns new query or None if cancelled."""
+        import tempfile
+        import subprocess
+
+        # Create temp file with helpful comments
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+            temp_path = f.name
+
+            # Write helpful comments
+            f.write("# Enter a JQL query or ticket key below\n")
+            f.write("# Examples:\n")
+            f.write("#   project=CIPLAT AND status='In Progress'\n")
+            f.write("#   project=CIPLAT AND assignee=currentUser() ORDER BY updated DESC\n")
+            f.write("#   CIPLAT-1234\n")
+            f.write("#\n")
+            f.write("# Lines starting with # will be ignored\n")
+            f.write("#\n")
+
+            # If edit mode, include current query
+            if is_edit_mode and current_query:
+                f.write(f"{current_query}\n")
+            else:
+                f.write("\n")
+
+        # Open vim editor
+        curses.def_prog_mode()
+        curses.endwin()
+
+        try:
+            subprocess.call(['vim', temp_path])
+        finally:
+            curses.reset_prog_mode()
+            stdscr.refresh()
+
+        # Read query from file
+        try:
+            with open(temp_path, 'r') as f:
+                lines = f.readlines()
+
+            # Remove comment lines and empty trailing lines
+            query_lines = [line.rstrip() for line in lines if not line.strip().startswith('#')]
+            new_query = '\n'.join(query_lines).strip()
+
+            # Clean up temp file
+            import os
+            os.unlink(temp_path)
+
+            if not new_query:
+                self._show_message(stdscr, "Query change cancelled (empty)", height, width)
+                return None
+
+            return new_query
+
+        except Exception as e:
+            self._show_message(stdscr, f"✗ Error: {str(e)}", height, width)
+            return None
 
     def _show_message(self, stdscr, message: str, height: int, width: int):
         """Show a temporary message overlay."""
@@ -1043,6 +1180,8 @@ class JiraTUI:
             "  v          Open ticket in browser",
             "  t          Transition ticket",
             "  c          Add comment to ticket",
+            "  s          New query (JQL or ticket key)",
+            "  S          Edit current query",
             "  /          Search/filter tickets",
             "  ?          Show this help",
             "  q          Quit",
