@@ -37,6 +37,7 @@ class JiraTUI:
         self.loading_count = 0  # Track how many tickets loaded
         self.loading_total = 0  # Track total tickets to load
         self.loading_lock = threading.Lock()  # Thread-safe cache updates
+        self.legend_lines = 0  # Track how many lines the legend occupies
 
     def run(self, query_or_ticket: str) -> int:
         """
@@ -203,7 +204,7 @@ class JiraTUI:
                 if selected_idx < len(tickets) - 1:
                     selected_idx += 1
                     # Auto-scroll if needed
-                    visible_height = height - 3
+                    visible_height = self._get_visible_height(height)
                     if selected_idx >= scroll_offset + visible_height:
                         scroll_offset = selected_idx - visible_height + 1
             elif key == ord('k') or key == curses.KEY_UP:  # Up
@@ -217,11 +218,18 @@ class JiraTUI:
                 scroll_offset = 0
             elif key == ord('G'):  # Go to bottom
                 selected_idx = len(tickets) - 1
-                visible_height = height - 3
+                visible_height = self._get_visible_height(height)
                 scroll_offset = max(0, len(tickets) - visible_height)
             elif key == ord('r'):  # Refresh
                 tickets, _ = self._fetch_tickets(query_or_ticket)
                 selected_idx = min(selected_idx, len(tickets) - 1)
+
+                # Adjust scroll position to keep selected item visible
+                visible_height = self._get_visible_height(height)
+                if selected_idx < scroll_offset:
+                    scroll_offset = selected_idx
+                elif selected_idx >= scroll_offset + visible_height:
+                    scroll_offset = selected_idx - visible_height + 1
 
                 # Clear cache and reset loading state
                 self.ticket_cache.clear()
@@ -595,7 +603,14 @@ class JiraTUI:
                 except curses.error:
                     pass
 
+        # Store legend height for scroll calculations
+        self.legend_lines = len(lines)
         return len(lines)
+
+    def _get_visible_height(self, height: int) -> int:
+        """Calculate visible height for ticket list accounting for legend and header."""
+        # height - 2 (status bar) - 1 (header) - legend_lines - 1 (separator)
+        return height - 4 - self.legend_lines
 
     def _draw_ticket_list(self, stdscr, tickets: List[dict], selected_idx: int,
                          scroll_offset: int, max_height: int, max_width: int,
