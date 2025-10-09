@@ -1218,8 +1218,21 @@ class JiraTUI:
             status = fields.get('status', {}).get('name', 'Unknown')
             status_letter = self.viewer.utils.get_status_letter(status)
 
-            # Calculate available space for summary (key + status + separators = ~18 chars)
-            summary_max = max_width - len(key) - 6
+            # Extract flags if present
+            flags = fields.get('customfield_10023', [])
+            flag_text = ''
+            if flags:
+                flag_values = []
+                for flag in flags:
+                    if isinstance(flag, dict):
+                        flag_values.append(flag.get('value', str(flag)))
+                    else:
+                        flag_values.append(str(flag))
+                if flag_values:
+                    flag_text = f"[{', '.join(flag_values)}] "
+
+            # Calculate available space for summary (key + status + separators + flags = variable)
+            summary_max = max_width - len(key) - len(flag_text) - 6
             summary = fields.get('summary', 'No summary')[:summary_max]
 
             # Highlight selection
@@ -1253,8 +1266,17 @@ class JiraTUI:
                 stdscr.addstr(y, x_pos, key, curses.color_pair(1) | base_attr)
                 x_pos += len(key)
 
-                # Draw colon and summary
-                stdscr.addstr(y, x_pos, f": {summary}", base_attr)
+                # Draw colon
+                stdscr.addstr(y, x_pos, ": ", base_attr)
+                x_pos += 2
+
+                # Draw flags in red if present
+                if flag_text:
+                    stdscr.addstr(y, x_pos, flag_text, curses.color_pair(4) | base_attr)
+                    x_pos += len(flag_text)
+
+                # Draw summary
+                stdscr.addstr(y, x_pos, summary, base_attr)
             except curses.error:
                 pass
 
@@ -1310,6 +1332,19 @@ class JiraTUI:
 
         lines.append(("", ""))
         lines.append((f"STATUS_{status_letter}", f" Status: {status}"[:max_width - 2]))
+
+        # Flags (show right under status if present)
+        flags = fields.get('customfield_10023', [])
+        if flags:
+            flag_values = []
+            for flag in flags:
+                if isinstance(flag, dict):
+                    flag_values.append(flag.get('value', str(flag)))
+                else:
+                    flag_values.append(str(flag))
+            flags_str = ', '.join(flag_values)
+            lines.append(("WARN", f" Flags: {flags_str}"[:max_width - 2]))
+
         lines.append(("", f" Type: {issue_type}"[:max_width - 2]))
         lines.append(("", f" Assignee: {assignee_name}"[:max_width - 2]))
         lines.append(("", f" Reporter: {reporter_name}"[:max_width - 2]))
@@ -1333,18 +1368,6 @@ class JiraTUI:
         if labels:
             labels_str = ', '.join(labels)
             lines.append(("", f" Labels: {labels_str}"[:max_width - 2]))
-
-        # Flags
-        flags = fields.get('customfield_10023', [])
-        if flags:
-            flag_values = []
-            for flag in flags:
-                if isinstance(flag, dict):
-                    flag_values.append(flag.get('value', str(flag)))
-                else:
-                    flag_values.append(str(flag))
-            flags_str = ', '.join(flag_values)
-            lines.append(("WARN", f" Flags: {flags_str}"[:max_width - 2]))
 
         # Parent
         if parent:
@@ -1473,6 +1496,8 @@ class JiraTUI:
                     attr = curses.color_pair(2)  # Yellow (2-4 days)
                 else:
                     attr = curses.A_NORMAL  # Normal (> 4 days)
+            elif tag == "WARN":
+                attr = curses.color_pair(4)  # Red for warnings/flags
             else:
                 attr = curses.A_NORMAL
 

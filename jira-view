@@ -229,6 +229,22 @@ class JiraViewer:
 
         print()
 
+        # Flags (show right under status if present)
+        flags = fields.get('customfield_10023', [])
+        if flags:
+            flag_values = []
+            for flag in flags:
+                if isinstance(flag, dict):
+                    flag_values.append(flag.get('value', str(flag)))
+                else:
+                    flag_values.append(str(flag))
+            flags_str = ', '.join(flag_values)
+            if use_colors:
+                print(f'\033[31m\033[1mFlags:\033[0m\033[31m      {flags_str}\033[0m')
+            else:
+                print(f'Flags:      {flags_str}')
+            print()
+
         # Key fields
         assignee = fields.get('assignee')
         assignee_name = self.utils.get_assignee_name(assignee) or assignee.get('displayName', 'Unassigned') if assignee else 'Unassigned'
@@ -297,21 +313,6 @@ class JiraViewer:
                 print(f'\033[1mLabels:\033[0m     \033[35m{labels_str}\033[0m')
             else:
                 print(f'Labels:     {labels_str}')
-
-        # Flags
-        flags = fields.get('customfield_10023', [])
-        if flags:
-            flag_values = []
-            for flag in flags:
-                if isinstance(flag, dict):
-                    flag_values.append(flag.get('value', str(flag)))
-                else:
-                    flag_values.append(str(flag))
-            flags_str = ', '.join(flag_values)
-            if use_colors:
-                print(f'\033[31m\033[1mFlags:\033[0m\033[31m      {flags_str}\033[0m')
-            else:
-                print(f'Flags:      {flags_str}')
 
         # Components
         components = fields.get('components', [])
