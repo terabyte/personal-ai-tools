@@ -44,6 +44,7 @@ class JiraTUI:
         self.detail_total_lines = 0  # Track total lines in right pane
         self.curses_initialized = False  # Track if curses is active
         self._original_sigint_handler = None  # Store original signal handler
+        self._shutdown_flag = False  # Flag to signal background threads to stop
 
     def _cleanup_curses(self):
         """Ensure curses is properly cleaned up."""
@@ -238,6 +239,7 @@ class JiraTUI:
             if key == -1:  # No input (timeout)
                 continue
             elif key == ord('q'):  # Quit
+                self._shutdown_flag = True
                 break
             elif key == ord('j') or key == curses.KEY_DOWN:  # Down
                 if selected_idx < len(tickets) - 1:
@@ -546,7 +548,8 @@ class JiraTUI:
         max_workers = 5  # Fetch up to 5 tickets concurrently
 
         # Use thread pool to fetch tickets in parallel
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        executor = ThreadPoolExecutor(max_workers=max_workers)
+        try:
             # Submit all fetch tasks
             future_to_key = {
                 executor.submit(self._fetch_single_ticket, ticket.get('key')): ticket.get('key')
@@ -555,6 +558,10 @@ class JiraTUI:
 
             # Process results as they complete
             for future in as_completed(future_to_key):
+                # Check if we should shutdown
+                if self._shutdown_flag:
+                    break
+
                 ticket_key = future_to_key[future]
                 try:
                     full_ticket = future.result()
@@ -563,11 +570,15 @@ class JiraTUI:
                             self.ticket_cache[ticket_key] = full_ticket
                             self.loading_count += 1
 
-                        # Fetch transitions for this ticket (don't wait for it)
-                        executor.submit(self._cache_transitions, ticket_key)
+                        # Only fetch transitions if not shutting down
+                        if not self._shutdown_flag:
+                            executor.submit(self._cache_transitions, ticket_key)
                 except Exception:
                     # Skip failed tickets
                     pass
+        finally:
+            # Shutdown executor without waiting for pending tasks
+            executor.shutdown(wait=False)
 
         # Mark loading as complete
         with self.loading_lock:
@@ -575,6 +586,9 @@ class JiraTUI:
 
     def _cache_transitions(self, ticket_key: str) -> None:
         """Cache transitions for a ticket."""
+        # Don't fetch if shutting down
+        if self._shutdown_flag:
+            return
         transitions = self._fetch_transitions(ticket_key)
         with self.loading_lock:
             self.transitions_cache[ticket_key] = transitions
@@ -583,12 +597,19 @@ class JiraTUI:
         """Background thread to load transitions for all tickets."""
         max_workers = 5  # Fetch up to 5 transitions concurrently
 
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        executor = ThreadPoolExecutor(max_workers=max_workers)
+        try:
             # Submit all transition fetch tasks
             for ticket in tickets:
+                # Check if we should shutdown
+                if self._shutdown_flag:
+                    break
                 ticket_key = ticket.get('key')
                 if ticket_key:
                     executor.submit(self._cache_transitions, ticket_key)
+        finally:
+            # Shutdown executor without waiting for pending tasks
+            executor.shutdown(wait=False)
 
     def _handle_transition(self, stdscr, ticket_key: str, height: int, width: int):
         """Handle ticket transition (T key)."""
