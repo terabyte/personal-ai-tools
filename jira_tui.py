@@ -1301,81 +1301,12 @@ class JiraTUI:
                 pass
             return
 
+        # Use shared formatting logic from viewer
+        lines = self.viewer.format_ticket_detail_lines(ticket, max_width)
+
+        # Add issuelinks info
         fields = ticket.get('fields', {})
-
-        # Extract key information
-        summary = fields.get('summary', 'No summary')
-        status = fields.get('status', {}).get('name', 'Unknown')
-        status_letter = self.viewer.utils.get_status_letter(status)
-        issue_type = fields.get('issuetype', {}).get('name', 'Unknown')
-        assignee = fields.get('assignee')
-        assignee_name = self.viewer.utils.get_assignee_name(assignee) if assignee else 'Unassigned'
-        priority = fields.get('priority', {}).get('name', 'None')
-        reporter = fields.get('reporter')
-        reporter_name = reporter.get('displayName', 'Unknown') if reporter else 'Unknown'
-        created_str = fields.get('created', '')
-        updated_str = fields.get('updated', '')
-        labels = fields.get('labels', [])
-        parent = fields.get('parent')
         issuelinks = fields.get('issuelinks', [])
-
-        # Draw content line by line
-        y = 0
-        lines = []
-
-        # Header (wrap all lines to ensure they fit)
-        lines.append(("KEY", f" {ticket_key}"[:max_width - 2]))  # Tagged for coloring
-        # Wrap summary if too long
-        summary_wrapped = self._wrap_text(summary, max_width - 3)
-        for s_line in summary_wrapped:
-            lines.append(("SUMMARY", f" {s_line}"))
-
-        lines.append(("", ""))
-        lines.append((f"STATUS_{status_letter}", f" Status: {status}"[:max_width - 2]))
-
-        # Flags (show right under status if present)
-        flags = fields.get('customfield_10023', [])
-        if flags:
-            flag_values = []
-            for flag in flags:
-                if isinstance(flag, dict):
-                    flag_values.append(flag.get('value', str(flag)))
-                else:
-                    flag_values.append(str(flag))
-            flags_str = ', '.join(flag_values)
-            lines.append(("WARN", f" Flags: {flags_str}"[:max_width - 2]))
-
-        lines.append(("", f" Type: {issue_type}"[:max_width - 2]))
-        lines.append(("", f" Assignee: {assignee_name}"[:max_width - 2]))
-        lines.append(("", f" Reporter: {reporter_name}"[:max_width - 2]))
-        lines.append((f"PRIORITY_{priority}", f" Priority: {priority}"[:max_width - 2]))
-
-        # Created date with relative time
-        created_date, created_rel, created_color = self._format_date_with_relative(created_str)
-        created_line = f" Created: {created_date}"
-        if created_rel:
-            created_line += f" ({created_rel})"
-        lines.append((f"DATE_{created_color}", created_line[:max_width - 2]))
-
-        # Updated date with relative time
-        updated_date, updated_rel, updated_color = self._format_date_with_relative(updated_str)
-        updated_line = f" Updated: {updated_date}"
-        if updated_rel:
-            updated_line += f" ({updated_rel})"
-        lines.append((f"DATE_{updated_color}", updated_line[:max_width - 2]))
-
-        # Labels
-        if labels:
-            labels_str = ', '.join(labels)
-            lines.append(("", f" Labels: {labels_str}"[:max_width - 2]))
-
-        # Parent
-        if parent:
-            parent_key = parent.get('key', 'Unknown')
-            parent_summary = parent.get('fields', {}).get('summary', '')
-            parent_text = f"{parent_key}: {parent_summary}" if parent_summary else parent_key
-            lines.append(("", f" Parent: {parent_text}"[:max_width - 2]))
-
         # Linked issues
         if issuelinks:
             lines.append(("", f" Linked: {len(issuelinks)} issue(s)"[:max_width - 2]))

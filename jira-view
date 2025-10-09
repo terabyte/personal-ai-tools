@@ -210,24 +210,28 @@ class JiraViewer:
 
         return lines
 
-    def display_ticket(self, ticket: dict, use_colors: bool, show_full: bool = False) -> None:
-        """Display formatted ticket details."""
+    def format_ticket_detail_lines(self, ticket: dict, max_width: int = 1000) -> List[Tuple[str, str]]:
+        """
+        Format ticket details as tagged lines for rendering.
+        Returns list of (tag, text) tuples where tag indicates styling.
+
+        Tags: KEY, SUMMARY, STATUS_X, WARN, PRIORITY_X, DATE_X, HEADER, or empty string
+        """
         fields = ticket.get('fields', {})
         key = ticket.get('key', 'N/A')
 
-        # Header
+        lines = []
+
+        # Header - Key and Summary
         summary = fields.get('summary', 'No summary')
+        lines.append(("KEY", f" {key}"[:max_width - 2]))
+        lines.append(("SUMMARY", f" {summary}"[:max_width - 2]))
+        lines.append(("", ""))
+
+        # Status
         status = fields.get('status', {}).get('name', 'Unknown')
-        issue_type = fields.get('issuetype', {}).get('name', 'Unknown')
-
-        if use_colors:
-            print(f'\033[1;32m{key}\033[0m - \033[1m{summary}\033[0m')
-            print(f'\033[90m{issue_type}\033[0m | {self.utils.format_status_indicator(status, use_colors)}')
-        else:
-            print(f'{key} - {summary}')
-            print(f'{issue_type} | [{status}]')
-
-        print()
+        status_letter = self.utils.get_status_letter(status)
+        lines.append((f"STATUS_{status_letter}", f" Status: {status}"[:max_width - 2]))
 
         # Flags (show right under status if present)
         flags = fields.get('customfield_10023', [])
@@ -239,93 +243,116 @@ class JiraViewer:
                 else:
                     flag_values.append(str(flag))
             flags_str = ', '.join(flag_values)
-            if use_colors:
-                print(f'\033[31m\033[1mFlags:\033[0m\033[31m      {flags_str}\033[0m')
-            else:
-                print(f'Flags:      {flags_str}')
-            print()
+            lines.append(("WARN", f" Flags: {flags_str}"[:max_width - 2]))
 
-        # Key fields
+        # Type, Assignee, Reporter, Priority
+        issue_type = fields.get('issuetype', {}).get('name', 'Unknown')
+        lines.append(("", f" Type: {issue_type}"[:max_width - 2]))
+
         assignee = fields.get('assignee')
-        assignee_name = self.utils.get_assignee_name(assignee) or assignee.get('displayName', 'Unassigned') if assignee else 'Unassigned'
+        assignee_name = self.utils.get_assignee_name(assignee) if assignee else 'Unassigned'
+        lines.append(("", f" Assignee: {assignee_name}"[:max_width - 2]))
 
-        reporter = fields.get('reporter', {})
-        reporter_name = self.utils.get_assignee_name(reporter) or reporter.get('displayName', 'Unknown')
+        reporter = fields.get('reporter')
+        reporter_name = reporter.get('displayName', 'Unknown') if reporter else 'Unknown'
+        lines.append(("", f" Reporter: {reporter_name}"[:max_width - 2]))
 
         priority = fields.get('priority', {}).get('name', 'None')
-        story_points = self.utils.format_story_points(fields.get('customfield_10061'))
+        lines.append((f"PRIORITY_{priority}", f" Priority: {priority}"[:max_width - 2]))
 
-        created = self.format_datetime(fields.get('created', ''))
-        created_days, created_text = self.utils.calculate_days_since_update(fields.get('created', ''))
-        created_relative = self.utils.format_days_with_color(created_days, created_text, use_colors)
+        # Dates with relative time
+        created_str = fields.get('created', '')
+        created_days, created_text = self.utils.calculate_days_since_update(created_str)
+        created_formatted = self.format_datetime(created_str)
+        created_color = '1' if created_days < 2 else '2' if created_days < 5 else '0'
+        created_line = f" Created: {created_formatted}"
+        if created_text:
+            created_line += f" ({created_text})"
+        lines.append((f"DATE_{created_color}", created_line[:max_width - 2]))
 
-        updated = self.format_datetime(fields.get('updated', ''))
-        updated_days, updated_text = self.utils.calculate_days_since_update(fields.get('updated', ''))
-        updated_relative = self.utils.format_days_with_color(updated_days, updated_text, use_colors)
-
-        if use_colors:
-            print(f'\033[1mAssignee:\033[0m   {assignee_name}')
-            print(f'\033[1mReporter:\033[0m   {reporter_name}')
-            print(f'\033[1mPriority:\033[0m   {priority}')
-            print(f'\033[1mStory Pts:\033[0m  {story_points}')
-            print(f'\033[1mCreated:\033[0m    {created} {created_relative}')
-            print(f'\033[1mUpdated:\033[0m    {updated} {updated_relative}')
-        else:
-            print(f'Assignee:   {assignee_name}')
-            print(f'Reporter:   {reporter_name}')
-            print(f'Priority:   {priority}')
-            print(f'Story Pts:  {story_points}')
-            print(f'Created:    {created} {created_relative}')
-            print(f'Updated:    {updated} {updated_relative}')
-
-        # Due date if present
-        due_date = fields.get('duedate')
-        if due_date:
-            if use_colors:
-                print(f'\033[1mDue Date:\033[0m   \033[31m{due_date}\033[0m')
-            else:
-                print(f'Due Date:   {due_date}')
-
-        # Sprint if present
-        sprint_info = self.utils.get_sprint_info(fields)
-        if sprint_info:
-            sprint_name = sprint_info.strip('[]').replace('Sprint=', '')
-            if use_colors:
-                print(f'\033[1mSprint:\033[0m     \033[36m{sprint_name}\033[0m')
-            else:
-                print(f'Sprint:     {sprint_name}')
-
-        # Parent (for subtasks)
-        parent = fields.get('parent')
-        if parent:
-            parent_key = parent.get('key', '')
-            parent_summary = parent.get('fields', {}).get('summary', '')
-            if use_colors:
-                print(f'\033[1mParent:\033[0m     \033[34m{parent_key}\033[0m - {parent_summary}')
-            else:
-                print(f'Parent:     {parent_key} - {parent_summary}')
+        updated_str = fields.get('updated', '')
+        updated_days, updated_text = self.utils.calculate_days_since_update(updated_str)
+        updated_formatted = self.format_datetime(updated_str)
+        updated_color = '1' if updated_days < 2 else '2' if updated_days < 5 else '0'
+        updated_line = f" Updated: {updated_formatted}"
+        if updated_text:
+            updated_line += f" ({updated_text})"
+        lines.append((f"DATE_{updated_color}", updated_line[:max_width - 2]))
 
         # Labels
         labels = fields.get('labels', [])
         if labels:
             labels_str = ', '.join(labels)
-            if use_colors:
-                print(f'\033[1mLabels:\033[0m     \033[35m{labels_str}\033[0m')
-            else:
-                print(f'Labels:     {labels_str}')
+            lines.append(("", f" Labels: {labels_str}"[:max_width - 2]))
 
-        # Components
-        components = fields.get('components', [])
-        if components:
-            comp_names = ', '.join(c.get('name', '') for c in components)
-            if use_colors:
-                print(f'\033[1mComponents:\033[0m {comp_names}')
-            else:
-                print(f'Components: {comp_names}')
+        # Parent
+        parent = fields.get('parent')
+        if parent:
+            parent_key = parent.get('key', 'Unknown')
+            parent_summary = parent.get('fields', {}).get('summary', '')
+            parent_text = f"{parent_key}: {parent_summary}" if parent_summary else parent_key
+            lines.append(("", f" Parent: {parent_text}"[:max_width - 2]))
 
+        return lines
+
+    def render_tagged_lines(self, lines: List[Tuple[str, str]], use_colors: bool) -> None:
+        """Render tagged lines with ANSI color codes."""
+        for tag, text in lines:
+            if not use_colors:
+                print(text)
+                continue
+
+            # Map tags to ANSI colors
+            if tag == "KEY":
+                print(f'\033[1;32m{text}\033[0m')  # Bold green
+            elif tag == "SUMMARY":
+                print(f'\033[1m{text}\033[0m')  # Bold
+            elif tag.startswith("STATUS_"):
+                status_letter = tag.split("_")[1]
+                if status_letter in ['C', 'V', 'Z', 'Y', 'M']:
+                    print(f'\033[32m{text}\033[0m')  # Green for done
+                elif status_letter in ['A', 'B', 'S', 'W']:
+                    print(f'\033[34m{text}\033[0m')  # Blue for backlog
+                elif status_letter in ['P', 'R', 'Q', 'T']:
+                    print(f'\033[33m{text}\033[0m')  # Yellow for active
+                elif status_letter in ['D', 'X', '_']:
+                    print(f'\033[31m{text}\033[0m')  # Red for blocked
+                else:
+                    print(text)
+            elif tag == "WARN":
+                print(f'\033[31m{text}\033[0m')  # Red
+            elif tag.startswith("PRIORITY_"):
+                priority = tag.split("_", 1)[1]
+                if priority in ['Critical', 'Blocker', 'Highest']:
+                    print(f'\033[31m{text}\033[0m')  # Red
+                elif priority in ['High']:
+                    print(f'\033[33m{text}\033[0m')  # Yellow
+                elif priority in ['Low', 'Lowest']:
+                    print(f'\033[34m{text}\033[0m')  # Blue
+                else:
+                    print(text)
+            elif tag.startswith("DATE_"):
+                color_num = tag.split("_")[1]
+                if color_num == '1':
+                    print(f'\033[32m{text}\033[0m')  # Green (< 2 days)
+                elif color_num == '2':
+                    print(f'\033[33m{text}\033[0m')  # Yellow (2-5 days)
+                else:
+                    print(text)
+            elif tag == "HEADER":
+                print(f'\033[34m{text}\033[0m')  # Blue
+            else:
+                print(text)
+
+    def display_ticket(self, ticket: dict, use_colors: bool, show_full: bool = False) -> None:
+        """Display formatted ticket details."""
+        # Use shared formatting logic
+        detail_lines = self.format_ticket_detail_lines(ticket)
+        self.render_tagged_lines(detail_lines, use_colors)
         print()
 
         # Description
+        fields = ticket.get('fields', {})
         description = fields.get('description')
         if use_colors:
             print('\033[1;34m──── Description ────\033[0m')
