@@ -474,21 +474,45 @@ class JiraViewer:
 
         query_or_ticket = args.query_or_ticket
 
-        # Determine if it's a ticket key or JQL query
-        if self.is_ticket_key(query_or_ticket):
-            # View single ticket
-            ticket = self.fetch_ticket_details(query_or_ticket)
-            if not ticket:
-                print(f'❌ Failed to fetch ticket: {query_or_ticket}', file=sys.stderr)
-                return 1
+        # If --no-tui is specified, display tickets non-interactively
+        if args.no_tui:
+            # Determine if it's a ticket key or JQL query
+            if self.is_ticket_key(query_or_ticket):
+                # View single ticket
+                ticket = self.fetch_ticket_details(query_or_ticket)
+                if not ticket:
+                    print(f'❌ Failed to fetch ticket: {query_or_ticket}', file=sys.stderr)
+                    return 1
 
-            self.display_ticket(ticket, use_colors, show_full=args.full)
-        else:
-            # JQL query - use interactive TUI
-            tui = JiraTUI(self, use_colors)
-            return tui.run(query_or_ticket)
+                self.display_ticket(ticket, use_colors, show_full=args.full)
+            else:
+                # JQL query - fetch and display all matching tickets
+                fields = [
+                    'key', 'summary', 'description', 'status', 'priority', 'assignee',
+                    'reporter', 'created', 'updated', 'resolutiondate', 'duedate',
+                    'issuetype', 'labels', 'components', 'fixVersions', 'comment',
+                    'customfield_10061',  # Story points
+                    'customfield_10021',  # Sprint
+                    'customfield_10023',  # Flags
+                    'parent'  # Parent issue for subtasks
+                ]
+                tickets = self.utils.fetch_all_jql_results(query_or_ticket, fields, expand='changelog')
 
-        return 0
+                if not tickets:
+                    print(f'❌ No tickets found matching query: {query_or_ticket}', file=sys.stderr)
+                    return 1
+
+                # Display each ticket sequentially
+                for i, ticket in enumerate(tickets):
+                    if i > 0:
+                        print('\n' + '=' * 80 + '\n')
+                    self.display_ticket(ticket, use_colors, show_full=args.full)
+
+            return 0
+
+        # Default: Always use interactive TUI
+        tui = JiraTUI(self, use_colors)
+        return tui.run(query_or_ticket)
 
 
 def main():
@@ -497,11 +521,12 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  jira-view CIPLAT-2250                                    # View a single ticket
-  jira-view "project=CIPLAT AND status='In Progress'"     # Interactive TUI mode
-  jira-view CIPLAT-2250 --full                            # View with all comments
+  jira-view CIPLAT-2250                                    # View ticket in TUI (default)
+  jira-view "project=CIPLAT AND status='In Progress'"     # View query results in TUI
+  jira-view CIPLAT-2250 --no-tui                          # View ticket non-interactively
+  jira-view "project=CIPLAT" --no-tui --full              # View all tickets sequentially
 
-Interactive TUI keybindings (JQL queries only):
+Interactive TUI keybindings:
   j/k or ↓/↑   Move up/down in ticket list
   g/G          Jump to top/bottom
   v            Open current ticket in browser
@@ -515,6 +540,7 @@ Interactive TUI keybindings (JQL queries only):
 
     parser.add_argument('query_or_ticket', help='Ticket key (PROJECT-123) or JQL query')
     parser.add_argument('--full', action='store_true', help='Show all comments and change history')
+    parser.add_argument('--no-tui', action='store_true', help='Disable interactive TUI, show tickets sequentially')
     parser.add_argument('-c', '--color', action='store_true', help='Force enable colors')
     parser.add_argument('--no-color', action='store_true', help='Force disable colors')
 
