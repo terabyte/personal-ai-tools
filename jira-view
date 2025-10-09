@@ -37,6 +37,7 @@ class JiraViewer:
             'issuetype', 'labels', 'components', 'fixVersions', 'comment',
             'customfield_10061',  # Story points
             'customfield_10021',  # Sprint
+            'customfield_10023',  # Flags
             'parent'  # Parent issue for subtasks
         ]
         fields_str = ','.join(fields)
@@ -296,6 +297,21 @@ class JiraViewer:
                 print(f'\033[1mLabels:\033[0m     \033[35m{labels_str}\033[0m')
             else:
                 print(f'Labels:     {labels_str}')
+
+        # Flags
+        flags = fields.get('customfield_10023', [])
+        if flags:
+            flag_values = []
+            for flag in flags:
+                if isinstance(flag, dict):
+                    flag_values.append(flag.get('value', str(flag)))
+                else:
+                    flag_values.append(str(flag))
+            flags_str = ', '.join(flag_values)
+            if use_colors:
+                print(f'\033[31m\033[1mFlags:\033[0m\033[31m      {flags_str}\033[0m')
+            else:
+                print(f'Flags:      {flags_str}')
 
         # Components
         components = fields.get('components', [])

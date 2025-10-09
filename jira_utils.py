@@ -293,8 +293,25 @@ class JiraUtils:
 
         priority_part = f'[P:{priority}]'
 
+        # Impediment flag
+        impediment_flag = ''
+        flags = fields.get('customfield_10023', [])
+        if flags:
+            flag_values = []
+            for flag in flags:
+                if isinstance(flag, dict):
+                    flag_values.append(flag.get('value', str(flag)))
+                else:
+                    flag_values.append(str(flag))
+            if flag_values:
+                flags_str = ', '.join(flag_values)
+                if use_colors:
+                    impediment_flag = f' \033[31m[{flags_str}]\033[0m'
+                else:
+                    impediment_flag = f' [{flags_str}]'
+
         # Format final line in standard format
-        return f'{index:2d}. {due_date_prefix}{asterisk}{status_indicator} {key} {days_part} [{story_points}pt{assignee_part}] {sprint_part}{due_part}{priority_part}: {summary}{summary_suffix}'
+        return f'{index:2d}. {due_date_prefix}{asterisk}{status_indicator} {key} {days_part} [{story_points}pt{assignee_part}] {sprint_part}{due_part}{priority_part}:{impediment_flag} {summary}{summary_suffix}'
 
     def get_sprint_asterisk(self, issue: dict, sprint_name: str, use_colors: bool) -> str:
         """Get asterisk indicator for tickets added after sprint start."""

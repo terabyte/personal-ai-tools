@@ -30,7 +30,7 @@ class BacklogCleanup:
 
         # Fetch all backlog items
         fields = ['key', 'summary', 'priority', 'created', 'assignee', 'customfield_10061',
-                 'customfield_10022', 'status', 'updated', 'duedate', 'customfield_10021']
+                 'customfield_10022', 'customfield_10023', 'status', 'updated', 'duedate', 'customfield_10021']
         all_issues = self.utils.fetch_all_jql_results(backlog_jql, fields)
 
         if not all_issues:

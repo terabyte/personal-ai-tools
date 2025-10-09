@@ -110,7 +110,7 @@ class JiraTUI:
         else:
             # JQL query - fetch and show first result
             fields = ['key', 'summary', 'status', 'priority', 'assignee', 'updated',
-                      'customfield_10061', 'customfield_10021']
+                      'customfield_10061', 'customfield_10021', 'customfield_10023']
 
             issues = self.viewer.utils.fetch_all_jql_results(query_or_ticket, fields)
 
@@ -519,6 +519,7 @@ class JiraTUI:
                 'key', 'summary', 'status', 'priority', 'assignee', 'updated',
                 'customfield_10061',  # Story points
                 'customfield_10021',  # Sprint
+                'customfield_10023',  # Flags
                 'description', 'reporter', 'created', 'issuetype', 'labels',
                 'parent', 'issuelinks', 'comment'
             ]
@@ -1332,6 +1333,18 @@ class JiraTUI:
         if labels:
             labels_str = ', '.join(labels)
             lines.append(("", f" Labels: {labels_str}"[:max_width - 2]))
+
+        # Flags
+        flags = fields.get('customfield_10023', [])
+        if flags:
+            flag_values = []
+            for flag in flags:
+                if isinstance(flag, dict):
+                    flag_values.append(flag.get('value', str(flag)))
+                else:
+                    flag_values.append(str(flag))
+            flags_str = ', '.join(flag_values)
+            lines.append(("WARN", f" Flags: {flags_str}"[:max_width - 2]))
 
         # Parent
         if parent:

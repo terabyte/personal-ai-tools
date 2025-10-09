@@ -396,7 +396,7 @@ class TeamDashboard:
 
         # Fetch all sprint tickets with proper pagination
         fields = ['key', 'summary', 'status', 'assignee', 'priority', 'customfield_10061',
-                 'updated', 'created', 'customfield_10021', 'duedate']
+                 'updated', 'created', 'customfield_10021', 'customfield_10023', 'duedate']
         issues = self.utils.fetch_all_jql_results(sprint_jql, fields, max_items=200)
 
         # Determine sprint state and dates from issues
@@ -585,9 +585,9 @@ class TeamDashboard:
         while True:
             # Build endpoint with nextPageToken if we have one
             if next_page_token:
-                endpoint = f"/search/jql?jql={jql_encoded}&fields=key,summary,priority,created,assignee,customfield_10061,customfield_10022,status,updated,duedate&maxResults={max_results}&nextPageToken={next_page_token}"
+                endpoint = f"/search/jql?jql={jql_encoded}&fields=key,summary,priority,created,assignee,customfield_10061,customfield_10022,customfield_10023,status,updated,duedate&maxResults={max_results}&nextPageToken={next_page_token}"
             else:
-                endpoint = f"/search/jql?jql={jql_encoded}&fields=key,summary,priority,created,assignee,customfield_10061,customfield_10022,status,updated,duedate&maxResults={max_results}"
+                endpoint = f"/search/jql?jql={jql_encoded}&fields=key,summary,priority,created,assignee,customfield_10061,customfield_10022,customfield_10023,status,updated,duedate&maxResults={max_results}"
 
             response = self.utils.call_jira_api(endpoint)
             if not response:
