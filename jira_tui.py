@@ -385,6 +385,15 @@ class JiraTUI:
                     if full_ticket:
                         with self.loading_lock:
                             self.ticket_cache[current_key] = full_ticket
+            elif key == ord('e') or key == ord('E'):  # Edit issue
+                if tickets:
+                    current_key = tickets[selected_idx].get('key')
+                    self._handle_edit_issue(stdscr, current_key, height, width)
+                    # Refresh current ticket after edit
+                    full_ticket = self.viewer.fetch_ticket_details(current_key)
+                    if full_ticket:
+                        with self.loading_lock:
+                            self.ticket_cache[current_key] = full_ticket
             elif key == ord('n') or key == ord('N'):  # New issue
                 new_ticket_key = self._handle_new_issue(stdscr, current_query, height, width)
                 if new_ticket_key:
@@ -936,6 +945,87 @@ class JiraTUI:
                 error_message = f"Unexpected error: {str(e)}"
                 # Continue loop to re-open editor with error
 
+    def _handle_edit_issue(self, stdscr, ticket_key: str, height: int, width: int):
+        """Handle editing an issue (e key)."""
+        import tempfile
+        import subprocess
+        import os
+
+        # Fetch full ticket details
+        with self.loading_lock:
+            ticket = self.ticket_cache.get(ticket_key)
+
+        if not ticket:
+            ticket = self.viewer.fetch_ticket_details(ticket_key)
+
+        if not ticket:
+            self._show_message(stdscr, "Failed to load ticket", height, width)
+            return
+
+        error_message = None
+        while True:
+            # Create template with current values
+            template = self._create_edit_template(ticket, error_message)
+
+            # Write to temp file
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+                temp_path = f.name
+                f.write(template)
+
+            # Open vim editor
+            curses.def_prog_mode()
+            curses.endwin()
+
+            try:
+                subprocess.call(['vim', temp_path])
+            finally:
+                curses.reset_prog_mode()
+                stdscr.refresh()
+
+            # Read and parse result
+            try:
+                with open(temp_path, 'r') as f:
+                    template_text = f.read()
+
+                os.unlink(temp_path)
+
+                # Parse fields
+                parsed = self._parse_issue_template(template_text)
+                if not parsed:
+                    self._show_message(stdscr, "Edit cancelled (empty)", height, width)
+                    return
+
+                # Check if anything changed
+                original_values = self._extract_current_values(ticket)
+                comment_text = parsed.pop('comment', None)  # Extract comment
+
+                changes = {}
+                for key, new_value in parsed.items():
+                    old_value = original_values.get(key, '')
+                    if new_value != old_value:
+                        changes[key] = new_value
+
+                if not changes and not comment_text:
+                    self._show_message(stdscr, "Edit cancelled (no changes)", height, width)
+                    return
+
+                # Update issue
+                success, result = self._update_jira_issue(ticket_key, changes, comment_text)
+                if success:
+                    msg = f"✓ Updated {ticket_key}"
+                    if comment_text:
+                        msg += " (with comment)"
+                    self._show_message(stdscr, msg, height, width)
+                    return
+                else:
+                    # Show error and loop to retry
+                    error_message = result
+                    # Continue loop to re-open editor with error
+
+            except Exception as e:
+                error_message = f"Unexpected error: {str(e)}"
+                # Continue loop to re-open editor with error
+
     def _handle_query_change(self, stdscr, current_query: str, is_edit_mode: bool, height: int, width: int) -> Optional[str]:
         """Handle changing the query (s/S key). Returns new query or None if cancelled."""
         import tempfile
@@ -1117,7 +1207,7 @@ class JiraTUI:
                 value = value.strip()
 
                 # Check if this is a multi-line field (ends with empty value or no value)
-                if key in ['description'] and not value:
+                if key in ['description', 'comment'] and not value:
                     current_field = key
                     current_value = []
                 elif value:
@@ -1200,6 +1290,207 @@ class JiraTUI:
                 return (False, "API call failed - no ticket key in response")
         except Exception as e:
             return (False, f"API error: {str(e)}")
+
+    def _create_edit_template(self, ticket: dict, error_message: Optional[str] = None) -> str:
+        """Create template for editing an existing issue."""
+        template = []
+
+        if error_message:
+            template.append(f"# ERROR: {error_message}")
+            template.append("#")
+
+        fields = ticket.get('fields', {})
+        key = ticket.get('key', 'Unknown')
+
+        template.extend([
+            f"# Edit Jira issue: {key}",
+            "# Lines starting with # are ignored",
+            "# Multi-line fields end with __END_OF_FIELDNAME__",
+            "# Leave field unchanged to keep current value",
+            "# Clear a field by leaving it empty",
+            "#",
+            "",
+            "# Add a comment with this update (optional):",
+            "comment:",
+            "",
+            "__END_OF_COMMENT__",
+            "",
+            "# Editable fields:",
+            ""
+        ])
+
+        # Extract current values
+        summary = fields.get('summary', '')
+        description_adf = fields.get('description', {})
+        description = self._adf_to_text(description_adf) if description_adf else ''
+
+        assignee = fields.get('assignee')
+        assignee_name = assignee.get('displayName', '') if assignee else ''
+
+        priority = fields.get('priority')
+        priority_name = priority.get('name', '') if priority else ''
+
+        labels = fields.get('labels', [])
+        labels_str = ', '.join(labels) if labels else ''
+
+        story_points = fields.get('customfield_10061', '')
+
+        epic_link = fields.get('customfield_10014', '')
+
+        # Add fields to template
+        template.extend([
+            f"summary: {summary}",
+            "",
+            "description:",
+            description,
+            "__END_OF_DESCRIPTION__",
+            "",
+            f"assignee: {assignee_name}",
+            f"priority: {priority_name}",
+            f"labels: {labels_str}",
+            f"story_points: {story_points}",
+            f"epic_link: {epic_link}",
+            ""
+        ])
+
+        return '\n'.join(template)
+
+    def _adf_to_text(self, adf: dict) -> str:
+        """Convert Atlassian Document Format to plain text."""
+        if not adf or not isinstance(adf, dict):
+            return ''
+
+        content = adf.get('content', [])
+        lines = []
+
+        for block in content:
+            block_type = block.get('type')
+            if block_type == 'paragraph':
+                para_content = block.get('content', [])
+                para_text = []
+                for item in para_content:
+                    if item.get('type') == 'text':
+                        para_text.append(item.get('text', ''))
+                lines.append(''.join(para_text))
+            elif block_type == 'codeBlock':
+                code_content = block.get('content', [])
+                for item in code_content:
+                    if item.get('type') == 'text':
+                        lines.append(item.get('text', ''))
+
+        return '\n'.join(lines)
+
+    def _extract_current_values(self, ticket: dict) -> dict:
+        """Extract current field values from ticket for comparison."""
+        fields = ticket.get('fields', {})
+
+        description_adf = fields.get('description', {})
+        description = self._adf_to_text(description_adf) if description_adf else ''
+
+        assignee = fields.get('assignee')
+        assignee_name = assignee.get('displayName', '') if assignee else ''
+
+        priority = fields.get('priority')
+        priority_name = priority.get('name', '') if priority else ''
+
+        labels = fields.get('labels', [])
+        labels_str = ', '.join(labels) if labels else ''
+
+        return {
+            'summary': fields.get('summary', ''),
+            'description': description,
+            'assignee': assignee_name,
+            'priority': priority_name,
+            'labels': labels_str,
+            'story_points': str(fields.get('customfield_10061', '')),
+            'epic_link': fields.get('customfield_10014', '')
+        }
+
+    def _update_jira_issue(self, ticket_key: str, changes: dict, comment_text: Optional[str]) -> tuple:
+        """Update Jira issue with changes. Returns (success, error_message)."""
+        if not changes and not comment_text:
+            return (True, "")
+
+        # Build update payload
+        update_payload = {"fields": {}}
+
+        # Handle field updates
+        if 'summary' in changes:
+            update_payload['fields']['summary'] = changes['summary']
+
+        if 'description' in changes:
+            if changes['description']:
+                update_payload['fields']['description'] = self._text_to_adf(changes['description'])
+            else:
+                update_payload['fields']['description'] = None
+
+        if 'assignee' in changes:
+            if changes['assignee']:
+                # Try to find user by display name
+                # For now, just set to null (unassigned) if empty, otherwise leave as-is
+                # TODO: Implement user lookup by display name
+                update_payload['fields']['assignee'] = {"accountId": changes['assignee']}
+            else:
+                update_payload['fields']['assignee'] = None
+
+        if 'priority' in changes and changes['priority']:
+            update_payload['fields']['priority'] = {"name": changes['priority']}
+
+        if 'labels' in changes:
+            if changes['labels']:
+                labels = [l.strip() for l in changes['labels'].split(',')]
+                update_payload['fields']['labels'] = labels
+            else:
+                update_payload['fields']['labels'] = []
+
+        if 'story_points' in changes:
+            if changes['story_points']:
+                try:
+                    update_payload['fields']['customfield_10061'] = int(changes['story_points'])
+                except ValueError:
+                    return (False, f"Invalid story points value: {changes['story_points']}")
+            else:
+                update_payload['fields']['customfield_10061'] = None
+
+        if 'epic_link' in changes:
+            if changes['epic_link']:
+                update_payload['fields']['customfield_10014'] = changes['epic_link']
+            else:
+                update_payload['fields']['customfield_10014'] = None
+
+        # Update the issue if there are changes
+        if update_payload['fields']:
+            try:
+                response = self.viewer.utils.call_jira_api(f'/issue/{ticket_key}', method='PUT', data=update_payload)
+
+                # Check for errors
+                if response is None:
+                    return (False, "API call failed")
+                elif response.get('errors') or response.get('errorMessages'):
+                    errors = response.get('errors', {})
+                    error_messages = response.get('errorMessages', [])
+                    if errors:
+                        field_errors = list(errors.values())
+                        error_text = field_errors[0] if field_errors else "Unknown error"
+                    else:
+                        error_text = error_messages[0] if error_messages else "Unknown error"
+                    return (False, error_text)
+            except Exception as e:
+                return (False, f"API error: {str(e)}")
+
+        # Add comment if provided
+        if comment_text:
+            try:
+                comment_payload = {
+                    "body": self._text_to_adf(comment_text)
+                }
+                response = self.viewer.utils.call_jira_api(f'/issue/{ticket_key}/comment', method='POST', data=comment_payload)
+                if response is None:
+                    return (False, "Failed to add comment")
+            except Exception as e:
+                return (False, f"Failed to add comment: {str(e)}")
+
+        return (True, "")
 
     def _show_message(self, stdscr, message: str, height: int, width: int):
         """Show a temporary message overlay."""
@@ -1598,7 +1889,7 @@ class JiraTUI:
             if not self.loading_complete:
                 status_left += f" [Loading {self.loading_count}/{self.loading_total}]"
 
-        status_right = " q:quit j/k:move g/G:top/bot r:refresh t:transition f:flags F:full c:comment v:browser ?:help "
+        status_right = " q:quit j/k:move g/G:top/bot r:refresh e:edit t:transition f:flags c:comment v:browser ?:help "
 
         # Calculate spacing
         padding = width - len(status_left) - len(status_right)
@@ -1626,6 +1917,7 @@ class JiraTUI:
             "",
             "Actions:",
             "  r          Refresh current view",
+            "  e          Edit ticket",
             "  f          Toggle flags",
             "  F          Toggle full mode (all comments)",
             "  v          Open ticket in browser",
