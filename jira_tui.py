@@ -321,7 +321,7 @@ class JiraTUI:
                 if search_query:
                     tickets = self._filter_tickets(all_tickets, search_query)
                     selected_idx = min(selected_idx, len(tickets) - 1)
-            elif key == ord('f'):  # Toggle full mode
+            elif key == ord('F'):  # Toggle full mode (capital F)
                 self.show_full = not self.show_full
             elif key == ord('v'):  # Open in browser
                 if tickets:
@@ -372,6 +372,15 @@ class JiraTUI:
                     current_key = tickets[selected_idx].get('key')
                     self._handle_comment(stdscr, current_key, height, width)
                     # Refresh current ticket after comment
+                    full_ticket = self.viewer.fetch_ticket_details(current_key)
+                    if full_ticket:
+                        with self.loading_lock:
+                            self.ticket_cache[current_key] = full_ticket
+            elif key == ord('f'):  # Flags (lowercase f)
+                if tickets:
+                    current_key = tickets[selected_idx].get('key')
+                    self._handle_flags(stdscr, current_key, height, width)
+                    # Refresh current ticket after flag change
                     full_ticket = self.viewer.fetch_ticket_details(current_key)
                     if full_ticket:
                         with self.loading_lock:
@@ -681,6 +690,119 @@ class JiraTUI:
                     self._show_message(stdscr, "Invalid choice", height, width)
             except (ValueError, KeyError):
                 self._show_message(stdscr, "Invalid input", height, width)
+
+        except curses.error:
+            pass
+
+    def _handle_flags(self, stdscr, ticket_key: str, height: int, width: int):
+        """Handle flag toggling (f key)."""
+        # Get current ticket to see existing flags
+        with self.loading_lock:
+            ticket = self.ticket_cache.get(ticket_key)
+
+        if not ticket:
+            ticket = self.viewer.fetch_ticket_details(ticket_key)
+
+        if not ticket:
+            self._show_message(stdscr, "Failed to load ticket", height, width)
+            return
+
+        # Get current flags
+        current_flags = ticket.get('fields', {}).get('customfield_10023', [])
+        current_flag_ids = {flag.get('id') for flag in current_flags if isinstance(flag, dict)}
+
+        # Available flag options (currently only Impediment is known)
+        # Structure: [(id, value), ...]
+        available_flags = [
+            ("10019", "Impediment"),
+        ]
+
+        # Track which flags are selected (start with current state)
+        selected_flags = set(current_flag_ids)
+
+        # Draw flag selection overlay
+        overlay_height = min(len(available_flags) + 6, height - 4)
+        overlay_width = min(60, width - 4)
+        start_y = (height - overlay_height) // 2
+        start_x = (width - overlay_width) // 2
+
+        cursor_pos = 0
+
+        try:
+            overlay = curses.newwin(overlay_height, overlay_width, start_y, start_x)
+
+            while True:
+                overlay.clear()
+                overlay.box()
+                overlay.addstr(0, 2, " Toggle Flags ", curses.A_BOLD)
+
+                # List flags with checkboxes
+                for idx, (flag_id, flag_value) in enumerate(available_flags):
+                    is_checked = flag_id in selected_flags
+                    checkbox = "[x]" if is_checked else "[ ]"
+
+                    # Highlight cursor position
+                    attr = curses.A_REVERSE if idx == cursor_pos else curses.A_NORMAL
+
+                    flag_line = f" {checkbox} {flag_value}"
+                    overlay.addstr(idx + 2, 2, flag_line[:overlay_width - 4], attr)
+
+                # Instructions
+                overlay.addstr(overlay_height - 3, 2, "Space: toggle  Enter: save  q: cancel")
+                overlay.refresh()
+
+                # Get user input
+                ch = overlay.getch()
+
+                if ch == ord('q') or ch == 27:  # q or ESC
+                    return
+                elif ch == ord(' '):  # Space to toggle
+                    flag_id, _ = available_flags[cursor_pos]
+                    if flag_id in selected_flags:
+                        selected_flags.remove(flag_id)
+                    else:
+                        selected_flags.add(flag_id)
+                elif ch in [curses.KEY_DOWN, ord('j')]:
+                    cursor_pos = min(cursor_pos + 1, len(available_flags) - 1)
+                elif ch in [curses.KEY_UP, ord('k')]:
+                    cursor_pos = max(cursor_pos - 1, 0)
+                elif ch == ord('\n'):  # Enter to save
+                    # Build the new flags array
+                    new_flags = [{"id": fid} for fid in selected_flags]
+
+                    # Call Jira API to update flags
+                    endpoint = f"/issue/{ticket_key}"
+                    payload = {
+                        "fields": {
+                            "customfield_10023": new_flags
+                        }
+                    }
+
+                    response = self.viewer.utils.call_jira_api(endpoint, method='PUT', data=payload)
+
+                    # Check if the response contains errors
+                    if response is None:
+                        self._show_message(stdscr, "✗ Failed to update flags", height, width)
+                    elif response.get('errors') or response.get('errorMessages'):
+                        # Extract error message
+                        errors = response.get('errors', {})
+                        error_messages = response.get('errorMessages', [])
+                        if errors:
+                            # Get first error message from the errors dict
+                            field_errors = list(errors.values())
+                            error_text = field_errors[0] if field_errors else "Unknown error"
+                        else:
+                            error_text = error_messages[0] if error_messages else "Unknown error"
+                        self._show_message(stdscr, f"✗ Failed: {error_text}", height, width)
+                    else:
+                        # Success
+                        flag_names = [val for fid, val in available_flags if fid in selected_flags]
+                        if flag_names:
+                            self._show_message(stdscr, f"✓ Flags set: {', '.join(flag_names)}", height, width)
+                        else:
+                            self._show_message(stdscr, "✓ Flags cleared", height, width)
+
+                    return
 
         except curses.error:
             pass
@@ -1476,7 +1598,7 @@ class JiraTUI:
             if not self.loading_complete:
                 status_left += f" [Loading {self.loading_count}/{self.loading_total}]"
 
-        status_right = " q:quit j/k:move g/G:top/bot r:refresh t:transition c:comment v:browser ?:help "
+        status_right = " q:quit j/k:move g/G:top/bot r:refresh t:transition f:flags F:full c:comment v:browser ?:help "
 
         # Calculate spacing
         padding = width - len(status_left) - len(status_right)
@@ -1504,7 +1626,8 @@ class JiraTUI:
             "",
             "Actions:",
             "  r          Refresh current view",
-            "  f          Toggle full mode (all comments)",
+            "  f          Toggle flags",
+            "  F          Toggle full mode (all comments)",
             "  v          Open ticket in browser",
             "  t          Transition ticket",
             "  c          Add comment to ticket",
