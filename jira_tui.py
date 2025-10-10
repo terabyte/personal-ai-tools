@@ -45,6 +45,7 @@ class JiraTUI:
         self.curses_initialized = False  # Track if curses is active
         self._original_sigint_handler = None  # Store original signal handler
         self._shutdown_flag = False  # Flag to signal background threads to stop
+        self.stale_tickets = set()  # Track tickets that may no longer match the query
 
     def _cleanup_curses(self):
         """Ensure curses is properly cleaned up."""
@@ -222,7 +223,7 @@ class JiraTUI:
                                    height - 2, list_width, search_query)
 
             # Draw ticket details in right pane
-            if tickets:
+            if tickets and selected_idx < len(tickets):
                 current_ticket_key = tickets[selected_idx].get('key')
                 self._draw_ticket_details(stdscr, current_ticket_key, detail_x,
                                          height - 2, detail_width)
@@ -287,9 +288,28 @@ class JiraTUI:
                 scroll_offset = max(0, len(tickets) - visible_height)
                 self.detail_scroll_offset = 0
             elif key == ord('r'):  # Refresh
+                # Remember currently selected ticket
+                current_ticket_key = tickets[selected_idx].get('key') if tickets and selected_idx < len(tickets) else None
+
                 all_tickets, _ = self._fetch_tickets(query_or_ticket)
                 tickets = all_tickets
-                selected_idx = min(selected_idx, len(tickets) - 1)
+
+                # Try to find the previously selected ticket in refreshed results
+                if current_ticket_key:
+                    new_idx = None
+                    for i, ticket in enumerate(tickets):
+                        if ticket.get('key') == current_ticket_key:
+                            new_idx = i
+                            break
+
+                    if new_idx is not None:
+                        # Ticket still exists, select it
+                        selected_idx = new_idx
+                    else:
+                        # Ticket no longer in results, select closest ticket
+                        selected_idx = min(selected_idx, len(tickets) - 1) if tickets else 0
+                else:
+                    selected_idx = min(selected_idx, len(tickets) - 1) if tickets else 0
 
                 # Adjust scroll position to keep selected item visible
                 visible_height = self._get_visible_height(height)
@@ -312,6 +332,9 @@ class JiraTUI:
                     self.loading_total = len(all_tickets)
                     self.loading_complete = True
 
+                # Clear stale tickets after refresh
+                self.stale_tickets.clear()
+
                 # Reload transitions in background
                 if all_tickets:
                     thread = threading.Thread(target=self._load_transitions_background, args=(all_tickets,), daemon=True)
@@ -320,11 +343,23 @@ class JiraTUI:
                 # Re-apply search filter if active
                 if search_query:
                     tickets = self._filter_tickets(all_tickets, search_query)
-                    selected_idx = min(selected_idx, len(tickets) - 1)
+                    # Try to maintain selection after filter
+                    if current_ticket_key:
+                        new_idx = None
+                        for i, ticket in enumerate(tickets):
+                            if ticket.get('key') == current_ticket_key:
+                                new_idx = i
+                                break
+                        if new_idx is not None:
+                            selected_idx = new_idx
+                        else:
+                            selected_idx = min(selected_idx, len(tickets) - 1) if tickets else 0
+                    else:
+                        selected_idx = min(selected_idx, len(tickets) - 1) if tickets else 0
             elif key == ord('F'):  # Toggle full mode (capital F)
                 self.show_full = not self.show_full
             elif key == ord('v'):  # Open in browser
-                if tickets:
+                if tickets and selected_idx < len(tickets):
                     current_key = tickets[selected_idx].get('key')
                     self._open_in_browser(current_key)
             elif key == ord('/'):  # Search
@@ -359,16 +394,18 @@ class JiraTUI:
                     elif selected_idx >= scroll_offset + visible_height:
                         scroll_offset = max(0, selected_idx - visible_height + 1)
             elif key == ord('t') or key == ord('T'):  # Transition
-                if tickets:
+                if tickets and selected_idx < len(tickets):
                     current_key = tickets[selected_idx].get('key')
                     self._handle_transition(stdscr, current_key, height, width)
+                    # Mark as stale since transition may affect query match
+                    self.stale_tickets.add(current_key)
                     # Refresh current ticket after transition
                     full_ticket = self.viewer.fetch_ticket_details(current_key)
                     if full_ticket:
                         with self.loading_lock:
                             self.ticket_cache[current_key] = full_ticket
             elif key == ord('c') or key == ord('C'):  # Comment
-                if tickets:
+                if tickets and selected_idx < len(tickets):
                     current_key = tickets[selected_idx].get('key')
                     self._handle_comment(stdscr, current_key, height, width)
                     # Refresh current ticket after comment
@@ -377,18 +414,22 @@ class JiraTUI:
                         with self.loading_lock:
                             self.ticket_cache[current_key] = full_ticket
             elif key == ord('f'):  # Flags (lowercase f)
-                if tickets:
+                if tickets and selected_idx < len(tickets):
                     current_key = tickets[selected_idx].get('key')
                     self._handle_flags(stdscr, current_key, height, width)
+                    # Mark as stale since flag change may affect query match
+                    self.stale_tickets.add(current_key)
                     # Refresh current ticket after flag change
                     full_ticket = self.viewer.fetch_ticket_details(current_key)
                     if full_ticket:
                         with self.loading_lock:
                             self.ticket_cache[current_key] = full_ticket
             elif key == ord('e') or key == ord('E'):  # Edit issue
-                if tickets:
+                if tickets and selected_idx < len(tickets):
                     current_key = tickets[selected_idx].get('key')
                     self._handle_edit_issue(stdscr, current_key, height, width)
+                    # Mark as stale since edit may affect query match
+                    self.stale_tickets.add(current_key)
                     # Refresh current ticket after edit
                     full_ticket = self.viewer.fetch_ticket_details(current_key)
                     if full_ticket:
@@ -412,9 +453,10 @@ class JiraTUI:
                             scroll_offset = 0
                             search_query = ""
 
-                            # Clear caches
+                            # Clear caches and stale tickets
                             self.ticket_cache.clear()
                             self.transitions_cache.clear()
+                            self.stale_tickets.clear()
 
                             # Cache all tickets immediately
                             with self.loading_lock:
@@ -449,9 +491,10 @@ class JiraTUI:
                             scroll_offset = 0
                             search_query = ""
 
-                            # Clear caches
+                            # Clear caches and stale tickets
                             self.ticket_cache.clear()
                             self.transitions_cache.clear()
+                            self.stale_tickets.clear()
 
                             # Cache all tickets immediately
                             with self.loading_lock:
@@ -490,9 +533,10 @@ class JiraTUI:
                             scroll_offset = 0
                             search_query = ""
 
-                            # Clear caches
+                            # Clear caches and stale tickets
                             self.ticket_cache.clear()
                             self.transitions_cache.clear()
+                            self.stale_tickets.clear()
 
                             # Cache all tickets immediately
                             with self.loading_lock:
@@ -1669,9 +1713,16 @@ class JiraTUI:
             summary_max = max_width - len(key) - len(flag_text) - 6
             summary = fields.get('summary', 'No summary')[:summary_max]
 
+            # Check if ticket is stale (may no longer match query)
+            is_stale = key in self.stale_tickets
+
             # Highlight selection
             is_selected = i == selected_idx
             base_attr = curses.A_REVERSE if is_selected else curses.A_NORMAL
+
+            # Apply dim attribute if stale
+            if is_stale:
+                base_attr |= curses.A_DIM
 
             # Determine status color (matching dashboard style)
             if status_letter in ['C', 'V', 'Z', 'Y', 'M']:
@@ -1696,7 +1747,7 @@ class JiraTUI:
                 stdscr.addstr(y, x_pos, " ", base_attr)
                 x_pos += 1
 
-                # Draw key in green
+                # Draw key in green (or dim if stale)
                 stdscr.addstr(y, x_pos, key, curses.color_pair(1) | base_attr)
                 x_pos += len(key)
 
@@ -1711,6 +1762,12 @@ class JiraTUI:
 
                 # Draw summary
                 stdscr.addstr(y, x_pos, summary, base_attr)
+
+                # Add stale indicator at the end if stale
+                if is_stale:
+                    stale_indicator = " [?]"
+                    if x_pos + len(stale_indicator) < max_width:
+                        stdscr.addstr(y, x_pos + len(summary), stale_indicator, base_attr)
             except curses.error:
                 pass
 
