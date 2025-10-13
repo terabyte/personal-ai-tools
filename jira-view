@@ -61,31 +61,44 @@ class JiraViewer:
 
         lines = []
 
-        def extract_text_inline(node):
-            """Extract plain text from inline ADF node."""
+        def extract_text_inline(node, for_display=False):
+            """Extract text from inline ADF node.
+
+            Args:
+                node: ADF node to process
+                for_display: If True, returns (tag, text) tuples for styled rendering
+            """
             if isinstance(node, str):
-                return node
+                return node if not for_display else [("", node)]
             if not isinstance(node, dict):
-                return ""
+                return "" if not for_display else []
 
             node_type = node.get('type')
 
             # Handle mentions
             if node_type == 'mention':
-                return node.get('attrs', {}).get('text', '@Unknown')
+                text = node.get('attrs', {}).get('text', '@Unknown')
+                return text if not for_display else [("LINK", text)]
 
             # Handle links
             if node_type == 'inlineCard':
-                return node.get('attrs', {}).get('url', '')
+                text = node.get('attrs', {}).get('url', '')
+                return text if not for_display else [("LINK", text)]
 
             # Handle regular text
             text_value = node.get('text', '')
             if text_value:
-                return text_value
+                return text_value if not for_display else [("", text_value)]
 
             # Recursively process content
             content = node.get('content', [])
-            return ''.join(extract_text_inline(c) for c in content)
+            if not for_display:
+                return ''.join(extract_text_inline(c, False) for c in content)
+            else:
+                result = []
+                for c in content:
+                    result.extend(extract_text_inline(c, True))
+                return result
 
         def process_node(node):
             """Process ADF nodes into (tag, text) tuples."""
@@ -102,9 +115,19 @@ class JiraViewer:
                 return result
 
             elif node_type == 'paragraph':
-                para_text = ''.join(extract_text_inline(c) for c in content)
+                # Get inline segments with tags
+                segments = []
+                for c in content:
+                    segments.extend(extract_text_inline(c, for_display=True))
+
+                # Build text from segments
+                para_text = ''.join(text for _, text in segments)
                 if para_text.strip():
-                    return [("", f"{indent}{para_text}")]
+                    # Return segments with indent prepended to first segment
+                    if segments:
+                        first_tag, first_text = segments[0]
+                        segments[0] = (first_tag, f"{indent}{first_text}")
+                    return [("SEGMENTS", segments)]
                 return []
 
             elif node_type == 'codeBlock':

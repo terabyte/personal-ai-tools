@@ -2415,6 +2415,13 @@ class JiraTUI:
                 if tag == "CODE":
                     # Code lines: don't wrap, just add with CODE tag
                     lines.append((tag, f"  {line}"[:max_width - 2]))
+                elif tag == "SEGMENTS":
+                    # Segmented lines (with inline styling): prepend spaces to first segment
+                    segments = line
+                    if segments:
+                        first_tag, first_text = segments[0]
+                        segments[0] = (first_tag, f"  {first_text}")
+                    lines.append((tag, segments))
                 else:
                     # Normal text: wrap as before
                     wrapped = self._wrap_text(line, max_width - 4)
@@ -2466,6 +2473,28 @@ class JiraTUI:
         visible_lines = lines[self.detail_scroll_offset:self.detail_scroll_offset + max_height - 1]
 
         for i, (tag, line) in enumerate(visible_lines):
+            # Handle segmented lines (inline styling)
+            if tag == "SEGMENTS":
+                # line is actually a list of (tag, text) segments
+                segments = line
+                x_pos = 0
+                for seg_tag, seg_text in segments:
+                    if seg_tag == "LINK":
+                        seg_attr = curses.color_pair(5)  # Cyan for links/mentions
+                    else:
+                        seg_attr = curses.A_NORMAL
+
+                    try:
+                        # Only render what fits
+                        available = max_width - 2 - x_pos
+                        if available > 0:
+                            text_to_render = seg_text[:available]
+                            stdscr.addstr(i, x_offset + 1 + x_pos, text_to_render, seg_attr)
+                            x_pos += len(text_to_render)
+                    except curses.error:
+                        pass
+                continue
+
             # Determine color based on tag
             if tag == "KEY":
                 attr = curses.color_pair(1) | curses.A_BOLD  # Green bold
