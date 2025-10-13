@@ -129,6 +129,13 @@ USAGE
 }
 
 function get_token {
+    # Skip authentication if JIRA_NO_AUTH is set
+    if [[ "${JIRA_NO_AUTH:-false}" == "true" ]]; then
+        JIRA_TOKEN=""
+        TOKEN_ACCOUNT=""
+        return 0
+    fi
+
     [[ -v JIRA_TOKEN ]] && return 0
 
     # Try to read from ~/.atlassian-mcp-token file first
@@ -190,11 +197,18 @@ call_api() {
 
     get_token || return 0
 
-    curl "$CURL_OPTS" -X "$method" \
-        --user "$TOKEN_ACCOUNT:$JIRA_TOKEN" \
-        -H "Content-Type: application/json" \
-        "${JIRA_API_URL%/}/${path#/}" \
-        "$@"
+    # Build curl command with optional authentication
+    local curl_cmd=(curl "$CURL_OPTS" -X "$method")
+
+    # Only add authentication if we have a token
+    if [[ -n "$JIRA_TOKEN" ]]; then
+        curl_cmd+=(--user "$TOKEN_ACCOUNT:$JIRA_TOKEN")
+    fi
+
+    curl_cmd+=(-H "Content-Type: application/json")
+    curl_cmd+=("${JIRA_API_URL%/}/${path#/}")
+
+    "${curl_cmd[@]}" "$@"
 }
 
 call_api "$@"

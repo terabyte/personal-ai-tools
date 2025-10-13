@@ -2,8 +2,9 @@
 
 """
 Jira Viewer - View tickets or query results with interactive TUI
-Usage: jira-view TICKET-123           # View a single ticket
-       jira-view "JQL query"          # Interactive TUI with vim keybindings
+Usage: jira-view TICKET-123                                   # View a single ticket
+       jira-view "JQL query"                                  # Interactive TUI with vim keybindings
+       JIRA_URL=https://jira.atlassian.com jira-view --no-auth TICKET-123  # Public Jira without auth
 """
 
 import argparse
@@ -664,6 +665,9 @@ Examples:
   jira-view CIPLAT-2250 --no-tui                          # View ticket non-interactively
   jira-view "project=CIPLAT" --no-tui --full              # View all tickets sequentially
 
+  # Access public Jira instances without authentication:
+  JIRA_URL=https://jira.atlassian.com jira-view ANALYTICS-123 --no-auth
+
 Interactive TUI keybindings:
   j/k or ↓/↑   Move up/down in ticket list
   g/G          Jump to top/bottom
@@ -681,8 +685,13 @@ Interactive TUI keybindings:
     parser.add_argument('--no-tui', action='store_true', help='Disable interactive TUI, show tickets sequentially')
     parser.add_argument('-c', '--color', action='store_true', help='Force enable colors')
     parser.add_argument('--no-color', action='store_true', help='Force disable colors')
+    parser.add_argument('--no-auth', action='store_true', help='Skip authentication (for public Jira instances)')
 
     args = parser.parse_args()
+
+    # Set JIRA_NO_AUTH environment variable if --no-auth flag is set
+    if args.no_auth:
+        os.environ['JIRA_NO_AUTH'] = 'true'
 
     viewer = JiraViewer()
     return viewer.run(args)
