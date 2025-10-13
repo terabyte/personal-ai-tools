@@ -39,7 +39,8 @@ class JiraViewer:
             'customfield_10021',  # Sprint
             'customfield_10023',  # Flags
             'parent',  # Parent issue for subtasks
-            'issuelinks'  # Linked issues
+            'issuelinks',  # Linked issues
+            'resolution'  # Resolution (for closed tickets)
         ]
         fields_str = ','.join(fields)
 
@@ -233,6 +234,12 @@ class JiraViewer:
         status = fields.get('status', {}).get('name', 'Unknown')
         status_letter = self.utils.get_status_letter(status)
         lines.append((f"STATUS_{status_letter}", f" Status: {status}"[:max_width - 2]))
+
+        # Resolution (show if present)
+        resolution = fields.get('resolution')
+        if resolution:
+            resolution_name = resolution.get('name', 'Unknown')
+            lines.append(("", f" Resolution: {resolution_name}"[:max_width - 2]))
 
         # Flags (show right under status if present)
         flags = fields.get('customfield_10023', [])

@@ -632,7 +632,7 @@ class JiraTUI:
                 'customfield_10021',  # Sprint
                 'customfield_10023',  # Flags
                 'description', 'reporter', 'created', 'issuetype', 'labels',
-                'parent', 'issuelinks', 'comment'
+                'parent', 'issuelinks', 'comment', 'resolution'
             ]
             issues = self.viewer.utils.fetch_all_jql_results(
                 query_or_ticket, fields, expand='changelog', progress_callback=progress_callback
