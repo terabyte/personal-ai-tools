@@ -1254,9 +1254,10 @@ class JiraTUI:
         project = self._extract_project_from_query(current_query) or "CIPLAT"
 
         error_message = None
+        previous_fields = None
         while True:
-            # Create template
-            template = self._create_issue_template(project, error_message)
+            # Create template (with previous fields if retrying after error)
+            template = self._create_issue_template(project, error_message, previous_fields)
 
             # Write to temp file
             with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
@@ -1292,11 +1293,15 @@ class JiraTUI:
                     self._show_message(stdscr, f"✓ Created issue: {result}", height, width)
                     return result
                 else:
-                    # Show error and loop to retry
+                    # Save fields and show error, then loop to retry
+                    previous_fields = fields
                     error_message = result
                     # Continue loop to re-open editor with error
 
             except Exception as e:
+                # Save fields if we had them
+                if 'fields' in locals():
+                    previous_fields = fields
                 error_message = f"Unexpected error: {str(e)}"
                 # Continue loop to re-open editor with error
 
@@ -1498,8 +1503,14 @@ class JiraTUI:
 
         return None
 
-    def _create_issue_template(self, project: str, error_message: Optional[str] = None) -> str:
-        """Create template for new issue creation."""
+    def _create_issue_template(self, project: str, error_message: Optional[str] = None, previous_fields: Optional[dict] = None) -> str:
+        """Create template for new issue creation.
+
+        Args:
+            project: Project key
+            error_message: Optional error message to display at top
+            previous_fields: Optional dict of previous field values to pre-populate
+        """
         template = []
 
         if error_message:
@@ -1515,24 +1526,75 @@ class JiraTUI:
             "# Issue Types: Task, Bug, New Feature, Improvement",
             "# Priorities: Critical, High, Medium, Low",
             "#",
-            "",
-            f"project: {project}",
-            "summary: ",
-            "issuetype: Task",
-            "",
-            "description:",
-            "",
-            "__END_OF_DESCRIPTION__",
-            "",
-            "# Optional fields (uncomment to use):",
-            "# assignee: currentUser()",
-            "# priority: Medium",
-            "# labels: ",
-            "# story_points: ",
-            "# epic_link: ",
             ""
         ])
 
+        # Use previous values if available, otherwise defaults
+        if previous_fields:
+            template.append(f"project: {previous_fields.get('project', project)}")
+            template.append(f"summary: {previous_fields.get('summary', '')}")
+            template.append(f"issuetype: {previous_fields.get('issuetype', 'Task')}")
+            template.append("")
+            template.append("description:")
+            desc = previous_fields.get('description', '')
+            if desc:
+                template.append(desc)
+            else:
+                template.append("")
+            template.append("__END_OF_DESCRIPTION__")
+            template.append("")
+
+            # Optional fields - show with values if they were set
+            template.append("# Optional fields (uncomment to use):")
+            assignee = previous_fields.get('assignee', '')
+            if assignee:
+                template.append(f"assignee: {assignee}")
+            else:
+                template.append("# assignee: currentUser()")
+
+            priority = previous_fields.get('priority', '')
+            if priority:
+                template.append(f"priority: {priority}")
+            else:
+                template.append("# priority: Medium")
+
+            labels = previous_fields.get('labels', '')
+            if labels:
+                template.append(f"labels: {labels}")
+            else:
+                template.append("# labels: ")
+
+            story_points = previous_fields.get('story_points', '')
+            if story_points:
+                template.append(f"story_points: {story_points}")
+            else:
+                template.append("# story_points: ")
+
+            epic_link = previous_fields.get('epic_link', '')
+            if epic_link:
+                template.append(f"epic_link: {epic_link}")
+            else:
+                template.append("# epic_link: ")
+        else:
+            # Default template
+            template.extend([
+                f"project: {project}",
+                "summary: ",
+                "issuetype: Task",
+                "",
+                "description:",
+                "",
+                "__END_OF_DESCRIPTION__",
+                "",
+                "# Optional fields (uncomment to use):",
+                "# assignee: currentUser()",
+                "# priority: Medium",
+                "# labels: ",
+                "# story_points: ",
+                "# epic_link: ",
+            ])
+
+        template.append("")
         return '\n'.join(template)
 
     def _parse_issue_template(self, template_text: str) -> Optional[dict]:
