@@ -73,13 +73,22 @@ class JiraUtils:
             print(f"❌ Error calling Jira API: {e}", file=sys.stderr)
             return None
 
-    def fetch_all_jql_results(self, jql: str, fields: List[str], max_items: int = 1000, expand: Optional[str] = None) -> List[dict]:
-        """Fetch all results for a JQL query using proper nextPageToken pagination."""
+    def fetch_all_jql_results(self, jql: str, fields: List[str], max_items: int = 1000, expand: Optional[str] = None, progress_callback=None) -> List[dict]:
+        """Fetch all results for a JQL query using proper nextPageToken pagination.
+
+        Args:
+            jql: JQL query string
+            fields: List of fields to fetch
+            max_items: Maximum number of items to fetch (default 1000)
+            expand: Optional expand parameter
+            progress_callback: Optional callback function(fetched_count, total_count) called after each page
+        """
         jql_encoded = jql.replace(' ', '%20').replace('"', '%22')
         fields_str = ','.join(fields)
         all_issues = []
         next_page_token = None
         max_results = 100
+        total_count = None  # Will be populated from first response
 
         while True:
             # Build endpoint with nextPageToken if we have one
@@ -99,11 +108,19 @@ class JiraUtils:
             issues = response.get('issues', [])
             next_page_token = response.get('nextPageToken')
 
+            # Get total count from first response
+            if total_count is None:
+                total_count = response.get('total', len(issues))
+
             # If no issues returned, we're done
             if not issues:
                 break
 
             all_issues.extend(issues)
+
+            # Call progress callback if provided
+            if progress_callback:
+                progress_callback(len(all_issues), total_count)
 
             # If no nextPageToken, we're on the last page
             if not next_page_token:

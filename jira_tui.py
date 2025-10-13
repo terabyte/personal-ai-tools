@@ -153,10 +153,20 @@ class JiraTUI:
             curses.init_pair(6, curses.COLOR_MAGENTA, -1)  # Magenta
             curses.init_pair(7, curses.COLOR_WHITE, -1)    # White/bright
 
-        # Fetch tickets
-        tickets, single_ticket_mode = self._fetch_tickets(query_or_ticket)
+        # Fetch tickets with progress display
+        stdscr.addstr(0, 0, "Fetching tickets...")
+        stdscr.refresh()
+
+        def progress_callback(fetched, total):
+            """Update screen with fetch progress."""
+            stdscr.clear()
+            stdscr.addstr(0, 0, f"Fetching tickets: {fetched}/{total}...")
+            stdscr.refresh()
+
+        tickets, single_ticket_mode = self._fetch_tickets(query_or_ticket, progress_callback)
 
         if not tickets:
+            stdscr.clear()
             stdscr.addstr(0, 0, "No tickets found. Press any key to exit.")
             stdscr.refresh()
             stdscr.getch()
@@ -594,9 +604,13 @@ class JiraTUI:
 
         return 0
 
-    def _fetch_tickets(self, query_or_ticket: str) -> tuple:
+    def _fetch_tickets(self, query_or_ticket: str, progress_callback=None) -> tuple:
         """
         Fetch tickets from Jira.
+
+        Args:
+            query_or_ticket: Ticket key or JQL query
+            progress_callback: Optional callback for progress updates
 
         Returns:
             Tuple of (ticket_list, is_single_ticket)
@@ -619,7 +633,9 @@ class JiraTUI:
                 'description', 'reporter', 'created', 'issuetype', 'labels',
                 'parent', 'issuelinks', 'comment'
             ]
-            issues = self.viewer.utils.fetch_all_jql_results(query_or_ticket, fields, expand='changelog')
+            issues = self.viewer.utils.fetch_all_jql_results(
+                query_or_ticket, fields, expand='changelog', progress_callback=progress_callback
+            )
             return issues, False
 
     def _fetch_single_ticket(self, ticket_key: str) -> Optional[dict]:
