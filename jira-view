@@ -50,6 +50,96 @@ class JiraViewer:
 
         return response
 
+    def format_description_lines(self, description_obj, indent: str = "  ") -> List[Tuple[str, str]]:
+        """Format Jira ADF description to tagged lines for TUI rendering.
+
+        Returns list of (tag, text) tuples where tag indicates styling.
+        Tags: CODE for code block lines, empty string for normal text.
+        """
+        if not description_obj:
+            return [("", f"{indent}(No description)")]
+
+        lines = []
+
+        def extract_text_inline(node):
+            """Extract plain text from inline ADF node."""
+            if isinstance(node, str):
+                return node
+            if not isinstance(node, dict):
+                return ""
+            text_value = node.get('text', '')
+            if text_value:
+                return text_value
+            content = node.get('content', [])
+            return ''.join(extract_text_inline(c) for c in content)
+
+        def process_node(node):
+            """Process ADF nodes into (tag, text) tuples."""
+            if not isinstance(node, dict):
+                return []
+
+            node_type = node.get('type')
+            content = node.get('content', [])
+
+            if node_type == 'doc':
+                result = []
+                for c in content:
+                    result.extend(process_node(c))
+                return result
+
+            elif node_type == 'paragraph':
+                para_text = ''.join(extract_text_inline(c) for c in content)
+                if para_text.strip():
+                    return [("", f"{indent}{para_text}")]
+                return []
+
+            elif node_type == 'codeBlock':
+                # Extract code text and split into lines
+                code_text = ''.join(extract_text_inline(c) for c in content)
+                code_lines = code_text.split('\n')
+                result = []
+                line_num_width = len(str(len(code_lines)))
+                for line_no, line in enumerate(code_lines, 1):
+                    # Add line number prefix and CODE tag
+                    prefix = f"{line_no:>{line_num_width}} "
+                    result.append(("CODE", f"{indent}{prefix}{line}"))
+                return result
+
+            elif node_type == 'bulletList':
+                result = []
+                for item in content:
+                    if item.get('type') == 'listItem':
+                        item_content = item.get('content', [])
+                        for ic in item_content:
+                            if ic.get('type') == 'paragraph':
+                                item_text = ''.join(extract_text_inline(c) for c in ic.get('content', []))
+                                if item_text.strip():
+                                    result.append(("", f"{indent}  • {item_text}"))
+                return result
+
+            elif node_type == 'orderedList':
+                result = []
+                for i, item in enumerate(content, 1):
+                    if item.get('type') == 'listItem':
+                        item_content = item.get('content', [])
+                        for ic in item_content:
+                            if ic.get('type') == 'paragraph':
+                                item_text = ''.join(extract_text_inline(c) for c in ic.get('content', []))
+                                if item_text.strip():
+                                    result.append(("", f"{indent}  {i}. {item_text}"))
+                return result
+
+            else:
+                # Default: recursively process content
+                result = []
+                for c in content:
+                    result.extend(process_node(c))
+                return result
+
+        # Process the description
+        lines = process_node(description_obj)
+        return lines if lines else [("", f"{indent}(No description)")]
+
     def format_description(self, description_obj, use_colors: bool, indent: str = "  ") -> str:
         """Format Jira ADF (Atlassian Document Format) description to readable text."""
         if not description_obj:

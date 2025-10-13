@@ -2284,11 +2284,16 @@ class JiraTUI:
         description = fields.get('description')
         if description:
             lines.append(("HEADER", (" Description:")[:max_width - 2]))
-            desc_text = self.viewer.format_description(description, False, indent="")
-            # Wrap description
-            for line in desc_text.split('\n'):
-                wrapped = self._wrap_text(line, max_width - 4)
-                lines.extend([("", f"  {l}") for l in wrapped])
+            desc_lines = self.viewer.format_description_lines(description, indent="")
+            # Wrap description lines, preserving tags
+            for tag, line in desc_lines:
+                if tag == "CODE":
+                    # Code lines: don't wrap, just add with CODE tag
+                    lines.append((tag, f"  {line}"[:max_width - 2]))
+                else:
+                    # Normal text: wrap as before
+                    wrapped = self._wrap_text(line, max_width - 4)
+                    lines.extend([("", f"  {l}") for l in wrapped])
 
         lines.append(("", ""))
 
@@ -2378,6 +2383,8 @@ class JiraTUI:
                     attr = curses.A_NORMAL  # Normal (> 4 days)
             elif tag == "WARN":
                 attr = curses.color_pair(4)  # Red for warnings/flags
+            elif tag == "CODE":
+                attr = curses.A_DIM  # Dim/grey for code blocks
             else:
                 attr = curses.A_NORMAL
 
