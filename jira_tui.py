@@ -1656,6 +1656,11 @@ class JiraTUI:
             if field not in fields or not fields[field]:
                 return (False, f"Missing required field: {field}")
 
+        # Normalize and validate project key
+        project_key = fields['project'].upper().strip()
+        if not project_key.replace('-', '').replace('_', '').isalnum():
+            return (False, f"Invalid project key: {fields['project']}. Project keys should contain only letters, numbers, hyphens, and underscores.")
+
         # Build API payload
         issuetype_name = fields['issuetype'].lower()
         issuetype_id = issuetype_map.get(issuetype_name)
@@ -1664,7 +1669,7 @@ class JiraTUI:
 
         payload = {
             "fields": {
-                "project": {"key": fields['project']},
+                "project": {"key": project_key},
                 "summary": fields['summary'],
                 "issuetype": {"id": issuetype_id}
             }
