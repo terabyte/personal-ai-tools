@@ -1827,7 +1827,7 @@ class JiraTUI:
         return '\n'.join(template)
 
     def _adf_to_text(self, adf: dict) -> str:
-        """Convert Atlassian Document Format to plain text."""
+        """Convert Atlassian Document Format to plain text with markdown code blocks."""
         if not adf or not isinstance(adf, dict):
             return ''
 
@@ -1844,10 +1844,20 @@ class JiraTUI:
                         para_text.append(item.get('text', ''))
                 lines.append(''.join(para_text))
             elif block_type == 'codeBlock':
+                # Get language if specified
+                language = block.get('attrs', {}).get('language', '')
+
+                # Add opening backticks with language
+                lines.append(f'```{language}')
+
+                # Add code content
                 code_content = block.get('content', [])
                 for item in code_content:
                     if item.get('type') == 'text':
                         lines.append(item.get('text', ''))
+
+                # Add closing backticks
+                lines.append('```')
 
         return '\n'.join(lines)
 
