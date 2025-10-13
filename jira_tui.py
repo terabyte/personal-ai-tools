@@ -1701,10 +1701,22 @@ class JiraTUI:
         # Call API
         try:
             response = self.viewer.utils.call_jira_api('/issue', method='POST', data=payload)
-            if response and 'key' in response:
-                return (True, response['key'])
-            else:
-                return (False, "API call failed - no ticket key in response")
+
+            # Check for error messages in response (jira-api returns exit 0 even on errors)
+            if response:
+                if 'errorMessages' in response or 'errors' in response:
+                    error_parts = []
+                    if 'errorMessages' in response:
+                        error_parts.extend(response['errorMessages'])
+                    if 'errors' in response:
+                        for field, msg in response['errors'].items():
+                            error_parts.append(f"{field}: {msg}")
+                    return (False, "; ".join(error_parts))
+
+                if 'key' in response:
+                    return (True, response['key'])
+
+            return (False, "API call failed - no ticket key in response")
         except Exception as e:
             return (False, f"API error: {str(e)}")
 
