@@ -796,16 +796,32 @@ class JiraTUI:
                     # Build payload with transition ID
                     payload = {"transition": {"id": transition_id}}
 
-                    # Check if resolution is required
+                    # Check for required fields
                     fields = transition.get('fields', {})
+                    transition_fields = {}
+
+                    # Check if resolution is required
                     if 'resolution' in fields and fields['resolution'].get('required'):
                         # Prompt for resolution
                         resolutions = fields['resolution'].get('allowedValues', [])
                         resolution_id = self._prompt_for_resolution(stdscr, resolutions, height, width)
                         if resolution_id is None:
                             return  # User cancelled
-                        # Add resolution to payload
-                        payload['fields'] = {'resolution': {'id': resolution_id}}
+                        transition_fields['resolution'] = {'id': resolution_id}
+
+                    # Check if Current Issue Owner is required (customfield_11684)
+                    if 'customfield_11684' in fields and fields['customfield_11684'].get('required'):
+                        # Get current user's account ID
+                        try:
+                            me_response = self.viewer.utils.call_jira_api("/myself")
+                            if me_response and 'accountId' in me_response:
+                                transition_fields['customfield_11684'] = {'accountId': me_response['accountId']}
+                        except:
+                            pass
+
+                    # Add fields to payload if any were collected
+                    if transition_fields:
+                        payload['fields'] = transition_fields
 
                     # Call Jira API to perform transition
                     endpoint = f"/issue/{ticket_key}/transitions"
@@ -815,20 +831,25 @@ class JiraTUI:
                         cmd = [str(self.viewer.utils.jira_api), 'POST', endpoint, '-d', json.dumps(payload)]
                         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
 
-                        if result.returncode == 0:
-                            self._show_message(stdscr, f"✓ Transitioned to {transition_name}", height, width)
-                        else:
-                            # Show error message from stderr
-                            error_msg = result.stderr.strip() or "Unknown error"
-                            # Try to parse JSON error for more details
+                        # Check for errors in JSON response (jira-api returns exit 0 even on HTTP errors)
+                        error_msg = None
+                        if result.stdout.strip():
                             try:
-                                error_json = json.loads(result.stdout or result.stderr)
-                                if 'errorMessages' in error_json and error_json['errorMessages']:
-                                    error_msg = error_json['errorMessages'][0]
-                                elif 'errors' in error_json:
-                                    error_msg = str(error_json['errors'])
+                                response_json = json.loads(result.stdout)
+                                if 'errorMessages' in response_json and response_json['errorMessages']:
+                                    error_msg = response_json['errorMessages'][0]
+                                elif 'errors' in response_json and response_json['errors']:
+                                    # errors is a dict like {"field": "error message"}
+                                    errors_dict = response_json['errors']
+                                    error_msg = "; ".join([f"{k}: {v}" for k, v in errors_dict.items()])
                             except:
                                 pass
+
+                        if result.returncode == 0 and error_msg is None:
+                            self._show_message(stdscr, f"✓ Transitioned to {transition_name}", height, width)
+                        else:
+                            if error_msg is None:
+                                error_msg = result.stderr.strip() or "Unknown error"
                             self._show_message(stdscr, f"✗ Transition failed: {error_msg[:80]}", height, width, duration=5000)
                     except subprocess.TimeoutExpired:
                         self._show_message(stdscr, "✗ Transition timed out", height, width)
