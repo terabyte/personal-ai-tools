@@ -302,7 +302,7 @@ class JiraTUI:
                 # Remember currently selected ticket
                 current_ticket_key = tickets[selected_idx].get('key') if tickets and selected_idx < len(tickets) else None
 
-                all_tickets, _ = self._fetch_tickets(query_or_ticket)
+                all_tickets, _ = self._fetch_tickets(current_query)
                 tickets = all_tickets
 
                 # Try to find the previously selected ticket in refreshed results
