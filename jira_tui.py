@@ -1830,27 +1830,50 @@ class JiraTUI:
         # Add issuelinks info
         fields = ticket.get('fields', {})
         issuelinks = fields.get('issuelinks', [])
-        # Linked issues
+
+        # Linked issues - group by relationship type
         if issuelinks:
-            lines.append(("", f" Linked: {len(issuelinks)} issue(s)"[:max_width - 2]))
-            for link in issuelinks[:5]:  # Show first 5 linked issues
-                link_type = link.get('type', {}).get('name', 'Unknown')
-                # Check if it's an inward or outward link
+            lines.append(("HEADER", (" Linked Issues:")[:max_width - 2]))
+
+            # Group links by relationship and direction
+            grouped_links = {}
+            for link in issuelinks:
+                link_type = link.get('type', {})
+
                 if 'inwardIssue' in link:
                     linked_issue = link['inwardIssue']
-                    direction = link.get('type', {}).get('inward', '')
+                    direction = link_type.get('inward', 'related to')
                 elif 'outwardIssue' in link:
                     linked_issue = link['outwardIssue']
-                    direction = link.get('type', {}).get('outward', '')
+                    direction = link_type.get('outward', 'relates to')
                 else:
                     continue
 
-                linked_key = linked_issue.get('key', 'Unknown')
-                linked_summary = linked_issue.get('fields', {}).get('summary', '')
-                link_text = f"  {direction}: {linked_key}"
-                if linked_summary:
-                    link_text += f" - {linked_summary}"
-                lines.append(("", link_text[:max_width - 2]))
+                if direction not in grouped_links:
+                    grouped_links[direction] = []
+                grouped_links[direction].append(linked_issue)
+
+            # Display grouped links
+            for direction, issues in sorted(grouped_links.items()):
+                lines.append(("", f"  {direction}:"[:max_width - 2]))
+
+                for linked_issue in issues:
+                    linked_key = linked_issue.get('key', 'Unknown')
+                    linked_fields = linked_issue.get('fields', {})
+                    linked_summary = linked_fields.get('summary', '')
+                    linked_status = linked_fields.get('status', {})
+                    status_name = linked_status.get('name', 'Unknown')
+                    status_letter = self.viewer.utils.get_status_letter(status_name)
+
+                    # Format: [P] CIPLAT-2116: Summary
+                    link_text = f"    [{status_letter}] {linked_key}"
+                    if linked_summary:
+                        # Calculate remaining space for summary
+                        remaining = max_width - len(link_text) - 6
+                        if remaining > 20:
+                            link_text += f": {linked_summary[:remaining]}"
+
+                    lines.append((f"STATUS_{status_letter}", link_text[:max_width - 2]))
 
         lines.append(("", ""))
 
