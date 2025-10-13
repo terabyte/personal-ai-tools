@@ -270,11 +270,11 @@ class JiraTUI:
                         scroll_offset = selected_idx
                     # Reset detail scroll when changing tickets
                     self.detail_scroll_offset = 0
-            elif key == 10:  # Ctrl+J - Scroll detail pane down
+            elif key == 10:  # Ctrl+J or Enter - Scroll detail pane down
                 detail_height = height - 2
                 if self.detail_scroll_offset + detail_height < self.detail_total_lines:
                     self.detail_scroll_offset += 1
-            elif key == 11:  # Ctrl+K - Scroll detail pane up
+            elif key == 11 or key == ord('\\'):  # Ctrl+K or \ - Scroll detail pane up
                 if self.detail_scroll_offset > 0:
                     self.detail_scroll_offset -= 1
             elif key == 2:  # Ctrl+B - Scroll detail pane down half-page
@@ -2309,6 +2309,8 @@ class JiraTUI:
             "  k / ↑      Move up in list",
             "  g          Jump to top",
             "  G          Jump to bottom",
+            "  Enter      Scroll detail pane down (1 line)",
+            "  \\          Scroll detail pane up (1 line)",
             "  Ctrl+J     Scroll detail pane down (1 line)",
             "  Ctrl+K     Scroll detail pane up (1 line)",
             "  Ctrl+B     Scroll detail pane down (half-page)",
