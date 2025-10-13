@@ -605,6 +605,28 @@ class JiraTUI:
 
         return 0
 
+    def _sort_tickets(self, tickets: List[dict], query: str) -> List[dict]:
+        """
+        Sort tickets based on query.
+
+        If query contains ORDER BY, preserve API order.
+        Otherwise, sort by key ascending alphabetically.
+
+        Args:
+            tickets: List of ticket dictionaries
+            query: The JQL query string
+
+        Returns:
+            Sorted list of tickets
+        """
+        # Check if query has ORDER BY clause (case insensitive)
+        if 'order by' in query.lower():
+            # Preserve order from API
+            return tickets
+        else:
+            # Sort by key ascending alphabetically
+            return sorted(tickets, key=lambda t: t.get('key', ''))
+
     def _fetch_tickets(self, query_or_ticket: str, progress_callback=None) -> tuple:
         """
         Fetch tickets from Jira.
@@ -637,6 +659,10 @@ class JiraTUI:
             issues = self.viewer.utils.fetch_all_jql_results(
                 query_or_ticket, fields, expand='changelog', progress_callback=progress_callback
             )
+
+            # Apply consistent sorting
+            issues = self._sort_tickets(issues, query_or_ticket)
+
             return issues, False
 
     def _fetch_single_ticket(self, ticket_key: str) -> Optional[dict]:
