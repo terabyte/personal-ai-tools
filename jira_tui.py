@@ -1444,13 +1444,111 @@ class JiraTUI:
             self._show_message(stdscr, f"✗ Error: {str(e)}", height, width)
             return None
 
+    def _search_user_by_display_name(self, display_name: str) -> Optional[str]:
+        """Search for user by display name and return accountId."""
+        import urllib.parse
+        try:
+            # Remove @ prefix if present
+            name = display_name.lstrip('@').strip()
+
+            # URL encode the name for the query
+            encoded_name = urllib.parse.quote(name)
+
+            # Search for users matching the display name
+            result = self.viewer.utils.call_jira_api(f'/user/search?query={encoded_name}')
+
+            if result and len(result) > 0:
+                # Return first match's accountId
+                return result[0].get('accountId')
+        except:
+            pass
+        return None
+
+    def _parse_inline_text(self, text: str) -> List[dict]:
+        """Parse inline text for mentions and links, returning ADF content nodes.
+
+        Supports:
+        - @Name mentions (looked up via API)
+        - Markdown links [text](url)
+        - Bare URLs
+        """
+        import re
+
+        result = []
+        pos = 0
+
+        # Pattern for markdown links [text](url)
+        markdown_link_pattern = r'\[([^\]]+)\]\(([^\)]+)\)'
+        # Pattern for @mentions (word characters, spaces, dots, hyphens)
+        mention_pattern = r'@([\w\s\.\-]+?)(?=\s|$|[,\.](?:\s|$))'
+        # Pattern for bare URLs
+        url_pattern = r'https?://[^\s\)]+'
+
+        # Combine patterns - order matters! Markdown links first, then mentions, then bare URLs
+        combined = f'({markdown_link_pattern})|({mention_pattern})|({url_pattern})'
+
+        for match in re.finditer(combined, text):
+            # Add text before match
+            if match.start() > pos:
+                result.append({
+                    "type": "text",
+                    "text": text[pos:match.start()]
+                })
+
+            if match.group(2) and match.group(3):  # Markdown link [text](url)
+                link_text = match.group(2)
+                link_url = match.group(3)
+                # For now, just use the URL (Jira inlineCard doesn't support custom text easily)
+                result.append({
+                    "type": "inlineCard",
+                    "attrs": {
+                        "url": link_url
+                    }
+                })
+            elif match.group(5):  # Mention (@Name)
+                name = match.group(5)
+                account_id = self._search_user_by_display_name(name)
+                if account_id:
+                    result.append({
+                        "type": "mention",
+                        "attrs": {
+                            "id": account_id,
+                            "text": f"@{name}"
+                        }
+                    })
+                else:
+                    # Couldn't find user, keep as text
+                    result.append({
+                        "type": "text",
+                        "text": f"@{name}"
+                    })
+            elif match.group(6):  # Bare URL
+                url = match.group(6)
+                result.append({
+                    "type": "inlineCard",
+                    "attrs": {
+                        "url": url
+                    }
+                })
+
+            pos = match.end()
+
+        # Add remaining text
+        if pos < len(text):
+            result.append({
+                "type": "text",
+                "text": text[pos:]
+            })
+
+        return result if result else [{"type": "text", "text": text}]
+
     def _text_to_adf(self, text: str) -> dict:
         """Convert plain text to Atlassian Document Format (ADF).
 
-        Supports markdown-style code blocks:
-        ```language
-        code here
-        ```
+        Supports:
+        - Code blocks: ```language ... ```
+        - Mentions: @Name (looked up via API)
+        - Links: bare URLs
         """
         lines = text.split('\n')
         content = []
@@ -1487,14 +1585,11 @@ class JiraTUI:
                 content.append(code_block)
                 i += 1  # Skip closing ```
             elif line.strip():  # Non-empty line
+                # Parse line for mentions and links
+                inline_content = self._parse_inline_text(line)
                 content.append({
                     "type": "paragraph",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": line
-                        }
-                    ]
+                    "content": inline_content
                 })
                 i += 1
             else:  # Empty line - add empty paragraph for spacing
@@ -1827,9 +1922,32 @@ class JiraTUI:
         return '\n'.join(template)
 
     def _adf_to_text(self, adf: dict) -> str:
-        """Convert Atlassian Document Format to plain text with markdown code blocks."""
+        """Convert Atlassian Document Format to plain text with markdown formatting.
+
+        Supports:
+        - Code blocks: wrapped in triple backticks
+        - Mentions: converted to @Name
+        - Links: converted to [text](url) or bare URL
+        """
         if not adf or not isinstance(adf, dict):
             return ''
+
+        def process_inline_content(content_items):
+            """Process inline content (text, mentions, links) within a paragraph."""
+            result = []
+            for item in content_items:
+                item_type = item.get('type')
+                if item_type == 'text':
+                    result.append(item.get('text', ''))
+                elif item_type == 'mention':
+                    # Extract mention text (e.g., "@Tron N")
+                    mention_text = item.get('attrs', {}).get('text', '@Unknown')
+                    result.append(mention_text)
+                elif item_type == 'inlineCard':
+                    # Extract link URL
+                    url = item.get('attrs', {}).get('url', '')
+                    result.append(url)
+            return ''.join(result)
 
         content = adf.get('content', [])
         lines = []
@@ -1838,11 +1956,8 @@ class JiraTUI:
             block_type = block.get('type')
             if block_type == 'paragraph':
                 para_content = block.get('content', [])
-                para_text = []
-                for item in para_content:
-                    if item.get('type') == 'text':
-                        para_text.append(item.get('text', ''))
-                lines.append(''.join(para_text))
+                para_text = process_inline_content(para_content)
+                lines.append(para_text)
             elif block_type == 'codeBlock':
                 # Get language if specified
                 language = block.get('attrs', {}).get('language', '')
