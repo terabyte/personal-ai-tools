@@ -38,7 +38,8 @@ class JiraViewer:
             'customfield_10061',  # Story points
             'customfield_10021',  # Sprint
             'customfield_10023',  # Flags
-            'parent'  # Parent issue for subtasks
+            'parent',  # Parent issue for subtasks
+            'issuelinks'  # Linked issues
         ]
         fields_str = ','.join(fields)
 
