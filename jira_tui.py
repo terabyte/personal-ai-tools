@@ -760,8 +760,8 @@ class JiraTUI:
             self._show_message(stdscr, "Failed to load ticket", height, width)
             return
 
-        # Get current flags
-        current_flags = ticket.get('fields', {}).get('customfield_10023', [])
+        # Get current flags (handle None value after clearing flags)
+        current_flags = ticket.get('fields', {}).get('customfield_10023') or []
         current_flag_ids = {flag.get('id') for flag in current_flags if isinstance(flag, dict)}
 
         # Available flag options (currently only Impediment is known)
@@ -1696,8 +1696,8 @@ class JiraTUI:
             status = fields.get('status', {}).get('name', 'Unknown')
             status_letter = self.viewer.utils.get_status_letter(status)
 
-            # Extract flags if present
-            flags = fields.get('customfield_10023', [])
+            # Extract flags if present (handle None value)
+            flags = fields.get('customfield_10023') or []
             flag_text = ''
             if flags:
                 flag_values = []
