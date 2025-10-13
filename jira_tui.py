@@ -5,6 +5,7 @@ Jira TUI - Terminal User Interface for interactive ticket viewing
 Provides a split-pane interface with vim keybindings for browsing tickets
 """
 
+import json
 import sys
 import subprocess
 import webbrowser
@@ -723,19 +724,25 @@ class JiraTUI:
 
     def _handle_transition(self, stdscr, ticket_key: str, height: int, width: int):
         """Handle ticket transition (T key)."""
-        # Get transitions from cache or fetch
-        with self.loading_lock:
-            transitions = self.transitions_cache.get(ticket_key)
-
-        if transitions is None:
-            transitions = self._fetch_transitions(ticket_key)
+        # Get transitions with field info from API
+        try:
+            endpoint = f"/issue/{ticket_key}/transitions?expand=transitions.fields"
+            response = self.viewer.utils.call_jira_api(endpoint)
+            if not response or 'transitions' not in response:
+                self._show_message(stdscr, "No transitions available", height, width)
+                return
+            transitions = response['transitions']
+        except Exception:
+            self._show_message(stdscr, "Failed to fetch transitions", height, width)
+            return
 
         if not transitions:
             self._show_message(stdscr, "No transitions available", height, width)
             return
 
-        # Draw transition selection overlay
-        overlay_height = min(len(transitions) + 4, height - 4)
+        # Draw transition selection overlay - ensure we have room for all transitions
+        max_visible = min(len(transitions), height - 8)  # Leave room for box, title, input
+        overlay_height = max_visible + 5  # +5 for box, title, input line, margins
         overlay_width = min(60, width - 4)
         start_y = (height - overlay_height) // 2
         start_x = (width - overlay_width) // 2
@@ -746,10 +753,17 @@ class JiraTUI:
             overlay.box()
             overlay.addstr(0, 2, " Select Transition ", curses.A_BOLD)
 
-            # List transitions
-            for idx, transition in enumerate(transitions[:overlay_height - 4], 1):
+            # List transitions (show warning if truncated)
+            for idx in range(max_visible):
+                transition = transitions[idx]
                 name = transition.get('name', 'Unknown')
-                overlay.addstr(idx + 1, 2, f"{idx}. {name[:overlay_width - 6]}")
+                # Show target state name
+                to_status = transition.get('to', {}).get('name', '')
+                display = f"{idx + 1}. {name} -> {to_status}"
+                overlay.addstr(idx + 2, 2, display[:overlay_width - 6])
+
+            if len(transitions) > max_visible:
+                overlay.addstr(max_visible + 2, 2, f"... and {len(transitions) - max_visible} more")
 
             overlay.addstr(overlay_height - 2, 2, "Enter number or q to cancel: ")
             overlay.refresh()
@@ -777,16 +791,49 @@ class JiraTUI:
                 if 1 <= choice <= len(transitions):
                     transition = transitions[choice - 1]
                     transition_id = transition.get('id')
+                    transition_name = transition.get('name')
+
+                    # Build payload with transition ID
+                    payload = {"transition": {"id": transition_id}}
+
+                    # Check if resolution is required
+                    fields = transition.get('fields', {})
+                    if 'resolution' in fields and fields['resolution'].get('required'):
+                        # Prompt for resolution
+                        resolutions = fields['resolution'].get('allowedValues', [])
+                        resolution_id = self._prompt_for_resolution(stdscr, resolutions, height, width)
+                        if resolution_id is None:
+                            return  # User cancelled
+                        # Add resolution to payload
+                        payload['fields'] = {'resolution': {'id': resolution_id}}
 
                     # Call Jira API to perform transition
                     endpoint = f"/issue/{ticket_key}/transitions"
-                    payload = {"transition": {"id": transition_id}}
-                    response = self.viewer.utils.call_jira_api(endpoint, method='POST', data=payload)
 
-                    if response is not None:
-                        self._show_message(stdscr, f"✓ Transitioned to {transition.get('name')}", height, width)
-                    else:
-                        self._show_message(stdscr, "✗ Transition failed", height, width)
+                    # Call jira-api directly so we can capture error messages
+                    try:
+                        cmd = [str(self.viewer.utils.jira_api), 'POST', endpoint, '-d', json.dumps(payload)]
+                        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+
+                        if result.returncode == 0:
+                            self._show_message(stdscr, f"✓ Transitioned to {transition_name}", height, width)
+                        else:
+                            # Show error message from stderr
+                            error_msg = result.stderr.strip() or "Unknown error"
+                            # Try to parse JSON error for more details
+                            try:
+                                error_json = json.loads(result.stdout or result.stderr)
+                                if 'errorMessages' in error_json and error_json['errorMessages']:
+                                    error_msg = error_json['errorMessages'][0]
+                                elif 'errors' in error_json:
+                                    error_msg = str(error_json['errors'])
+                            except:
+                                pass
+                            self._show_message(stdscr, f"✗ Transition failed: {error_msg[:80]}", height, width, duration=5000)
+                    except subprocess.TimeoutExpired:
+                        self._show_message(stdscr, "✗ Transition timed out", height, width)
+                    except Exception as e:
+                        self._show_message(stdscr, f"✗ Error: {str(e)[:80]}", height, width)
                 else:
                     self._show_message(stdscr, "Invalid choice", height, width)
             except (ValueError, KeyError):
@@ -794,6 +841,65 @@ class JiraTUI:
 
         except curses.error:
             pass
+
+    def _prompt_for_resolution(self, stdscr, resolutions: list, height: int, width: int) -> Optional[str]:
+        """Prompt user to select a resolution. Returns resolution ID or None if cancelled."""
+        if not resolutions:
+            return None
+
+        # Draw resolution selection overlay
+        max_visible = min(len(resolutions), height - 8)
+        overlay_height = max_visible + 5
+        overlay_width = min(60, width - 4)
+        start_y = (height - overlay_height) // 2
+        start_x = (width - overlay_width) // 2
+
+        try:
+            overlay = curses.newwin(overlay_height, overlay_width, start_y, start_x)
+            overlay.box()
+            overlay.addstr(0, 2, " Select Resolution ", curses.A_BOLD)
+
+            # List resolutions
+            for idx in range(max_visible):
+                resolution = resolutions[idx]
+                name = resolution.get('name', 'Unknown')
+                overlay.addstr(idx + 2, 2, f"{idx + 1}. {name[:overlay_width - 6]}")
+
+            if len(resolutions) > max_visible:
+                overlay.addstr(max_visible + 2, 2, f"... and {len(resolutions) - max_visible} more")
+
+            overlay.addstr(overlay_height - 2, 2, "Enter number or q to cancel: ")
+            overlay.refresh()
+
+            # Get user input
+            curses.echo()
+            input_str = ""
+            while True:
+                ch = overlay.getch()
+                if ch == ord('q') or ch == 27:  # q or ESC
+                    curses.noecho()
+                    return None
+                elif ch == ord('\n'):
+                    break
+                elif ch in [curses.KEY_BACKSPACE, 127, 8]:
+                    input_str = input_str[:-1]
+                elif chr(ch).isdigit():
+                    input_str += chr(ch)
+
+            curses.noecho()
+
+            # Return selected resolution ID
+            try:
+                choice = int(input_str)
+                if 1 <= choice <= len(resolutions):
+                    return resolutions[choice - 1].get('id')
+            except ValueError:
+                pass
+
+            return None
+
+        except curses.error:
+            return None
 
     def _handle_flags(self, stdscr, ticket_key: str, height: int, width: int):
         """Handle flag toggling (f key)."""
@@ -1584,8 +1690,16 @@ class JiraTUI:
 
         return (True, "")
 
-    def _show_message(self, stdscr, message: str, height: int, width: int):
-        """Show a temporary message overlay."""
+    def _show_message(self, stdscr, message: str, height: int, width: int, duration: int = 1500):
+        """Show a temporary message overlay.
+
+        Args:
+            stdscr: Curses screen object
+            message: Message to display
+            height: Screen height
+            width: Screen width
+            duration: Duration in milliseconds (default 1500)
+        """
         msg_width = min(len(message) + 4, width - 4)
         msg_height = 3
         start_y = (height - msg_height) // 2
@@ -1596,7 +1710,7 @@ class JiraTUI:
             overlay.box()
             overlay.addstr(1, 2, message[:msg_width - 4])
             overlay.refresh()
-            curses.napms(1500)  # Show for 1.5 seconds
+            curses.napms(duration)
         except curses.error:
             pass
 
