@@ -67,9 +67,23 @@ class JiraViewer:
                 return node
             if not isinstance(node, dict):
                 return ""
+
+            node_type = node.get('type')
+
+            # Handle mentions
+            if node_type == 'mention':
+                return node.get('attrs', {}).get('text', '@Unknown')
+
+            # Handle links
+            if node_type == 'inlineCard':
+                return node.get('attrs', {}).get('url', '')
+
+            # Handle regular text
             text_value = node.get('text', '')
             if text_value:
                 return text_value
+
+            # Recursively process content
             content = node.get('content', [])
             return ''.join(extract_text_inline(c) for c in content)
 
@@ -196,6 +210,9 @@ class JiraViewer:
                     return f'{indent}  {code_text}'
                 elif node_type == 'hardBreak':
                     return '\n'
+                elif node_type == 'mention':
+                    mention_text = node.get('attrs', {}).get('text', '@Unknown')
+                    return mention_text
                 elif node_type == 'inlineCard':
                     url = node.get('attrs', {}).get('url', '')
                     return url
