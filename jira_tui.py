@@ -399,42 +399,74 @@ class JiraTUI:
                     self._handle_transition(stdscr, current_key, height, width)
                     # Mark as stale since transition may affect query match
                     self.stale_tickets.add(current_key)
-                    # Refresh current ticket after transition
+                    # Refresh current ticket after transition (both cache and list)
                     full_ticket = self.viewer.fetch_ticket_details(current_key)
                     if full_ticket:
                         with self.loading_lock:
                             self.ticket_cache[current_key] = full_ticket
+                        # Update the tickets list entry so left pane shows updated data
+                        tickets[selected_idx] = {'key': full_ticket.get('key'), 'fields': full_ticket.get('fields', {})}
+                        if tickets is not all_tickets:
+                            # Also update all_tickets if we're in filtered view
+                            for i, t in enumerate(all_tickets):
+                                if t.get('key') == current_key:
+                                    all_tickets[i] = tickets[selected_idx]
+                                    break
             elif key == ord('c') or key == ord('C'):  # Comment
                 if tickets and selected_idx < len(tickets):
                     current_key = tickets[selected_idx].get('key')
                     self._handle_comment(stdscr, current_key, height, width)
-                    # Refresh current ticket after comment
+                    # Refresh current ticket after comment (both cache and list)
                     full_ticket = self.viewer.fetch_ticket_details(current_key)
                     if full_ticket:
                         with self.loading_lock:
                             self.ticket_cache[current_key] = full_ticket
+                        # Update the tickets list entry so left pane shows updated data
+                        tickets[selected_idx] = {'key': full_ticket.get('key'), 'fields': full_ticket.get('fields', {})}
+                        if tickets is not all_tickets:
+                            # Also update all_tickets if we're in filtered view
+                            for i, t in enumerate(all_tickets):
+                                if t.get('key') == current_key:
+                                    all_tickets[i] = tickets[selected_idx]
+                                    break
             elif key == ord('f'):  # Flags (lowercase f)
                 if tickets and selected_idx < len(tickets):
                     current_key = tickets[selected_idx].get('key')
                     self._handle_flags(stdscr, current_key, height, width)
                     # Mark as stale since flag change may affect query match
                     self.stale_tickets.add(current_key)
-                    # Refresh current ticket after flag change
+                    # Refresh current ticket after flag change (both cache and list)
                     full_ticket = self.viewer.fetch_ticket_details(current_key)
                     if full_ticket:
                         with self.loading_lock:
                             self.ticket_cache[current_key] = full_ticket
+                        # Update the tickets list entry so left pane shows updated data
+                        tickets[selected_idx] = {'key': full_ticket.get('key'), 'fields': full_ticket.get('fields', {})}
+                        if tickets is not all_tickets:
+                            # Also update all_tickets if we're in filtered view
+                            for i, t in enumerate(all_tickets):
+                                if t.get('key') == current_key:
+                                    all_tickets[i] = tickets[selected_idx]
+                                    break
             elif key == ord('e') or key == ord('E'):  # Edit issue
                 if tickets and selected_idx < len(tickets):
                     current_key = tickets[selected_idx].get('key')
                     self._handle_edit_issue(stdscr, current_key, height, width)
                     # Mark as stale since edit may affect query match
                     self.stale_tickets.add(current_key)
-                    # Refresh current ticket after edit
+                    # Refresh current ticket after edit (both cache and list)
                     full_ticket = self.viewer.fetch_ticket_details(current_key)
                     if full_ticket:
                         with self.loading_lock:
                             self.ticket_cache[current_key] = full_ticket
+                        # Update the tickets list entry so left pane shows updated data
+                        tickets[selected_idx] = {'key': full_ticket.get('key'), 'fields': full_ticket.get('fields', {})}
+                        if tickets is not all_tickets:
+                            # Also update all_tickets if we're in filtered view
+                            for i, t in enumerate(all_tickets):
+                                if t.get('key') == current_key:
+                                    all_tickets[i] = tickets[selected_idx]
+                                    break
             elif key == ord('n') or key == ord('N'):  # New issue
                 new_ticket_key = self._handle_new_issue(stdscr, current_query, height, width)
                 if new_ticket_key:
