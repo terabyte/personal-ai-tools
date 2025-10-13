@@ -1445,13 +1445,48 @@ class JiraTUI:
             return None
 
     def _text_to_adf(self, text: str) -> dict:
-        """Convert plain text to Atlassian Document Format (ADF)."""
-        # Split text into lines and create paragraph for each non-empty line
+        """Convert plain text to Atlassian Document Format (ADF).
+
+        Supports markdown-style code blocks:
+        ```language
+        code here
+        ```
+        """
         lines = text.split('\n')
         content = []
+        i = 0
 
-        for line in lines:
-            if line.strip():  # Non-empty line
+        while i < len(lines):
+            line = lines[i]
+
+            # Check for code block start (```)
+            if line.strip().startswith('```'):
+                # Extract language if specified
+                language = line.strip()[3:].strip() or None
+
+                # Collect code block lines
+                code_lines = []
+                i += 1
+                while i < len(lines) and not lines[i].strip().startswith('```'):
+                    code_lines.append(lines[i])
+                    i += 1
+
+                # Create code block node
+                code_block = {
+                    "type": "codeBlock",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": '\n'.join(code_lines)
+                        }
+                    ]
+                }
+                if language:
+                    code_block["attrs"] = {"language": language}
+
+                content.append(code_block)
+                i += 1  # Skip closing ```
+            elif line.strip():  # Non-empty line
                 content.append({
                     "type": "paragraph",
                     "content": [
@@ -1461,11 +1496,13 @@ class JiraTUI:
                         }
                     ]
                 })
+                i += 1
             else:  # Empty line - add empty paragraph for spacing
                 content.append({
                     "type": "paragraph",
                     "content": []
                 })
+                i += 1
 
         # Handle case where text is empty or only whitespace
         if not content:
