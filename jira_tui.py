@@ -827,6 +827,7 @@ class JiraTUI:
                     transition_fields = {}
 
                     # Check if resolution is required
+                    is_closing = False
                     if 'resolution' in fields and fields['resolution'].get('required'):
                         # Prompt for resolution
                         resolutions = fields['resolution'].get('allowedValues', [])
@@ -834,6 +835,7 @@ class JiraTUI:
                         if resolution_id is None:
                             return  # User cancelled
                         transition_fields['resolution'] = {'id': resolution_id}
+                        is_closing = True
 
                     # Check if Current Issue Owner is required (customfield_11684)
                     if 'customfield_11684' in fields and fields['customfield_11684'].get('required'):
@@ -848,6 +850,18 @@ class JiraTUI:
                     # Add fields to payload if any were collected
                     if transition_fields:
                         payload['fields'] = transition_fields
+
+                    # If closing, prompt for optional comment
+                    comment_text = None
+                    if is_closing:
+                        add_comment = self._prompt_yes_no(stdscr, "Add a comment?", height, width)
+                        if add_comment:
+                            comment_text = self._prompt_for_comment_vim(stdscr, ticket_key, height, width)
+                            if comment_text is None:
+                                # User cancelled the comment, ask if they still want to proceed
+                                proceed = self._prompt_yes_no(stdscr, "Continue without comment?", height, width)
+                                if not proceed:
+                                    return
 
                     # Call Jira API to perform transition
                     endpoint = f"/issue/{ticket_key}/transitions"
@@ -872,6 +886,9 @@ class JiraTUI:
                                 pass
 
                         if result.returncode == 0 and error_msg is None:
+                            # Transition succeeded, now add comment if provided
+                            if comment_text:
+                                self._add_comment_to_ticket(ticket_key, comment_text)
                             self._show_message(stdscr, f"✓ Transitioned to {transition_name}", height, width)
                         else:
                             if error_msg is None:
@@ -947,6 +964,99 @@ class JiraTUI:
 
         except curses.error:
             return None
+
+    def _prompt_yes_no(self, stdscr, question: str, height: int, width: int) -> bool:
+        """Prompt user with yes/no question. Returns True for yes, False for no."""
+        msg_width = min(len(question) + 14, width - 4)  # Extra space for " (y/n): "
+        msg_height = 3
+        start_y = (height - msg_height) // 2
+        start_x = (width - msg_width) // 2
+
+        try:
+            overlay = curses.newwin(msg_height, msg_width, start_y, start_x)
+            overlay.box()
+            overlay.addstr(1, 2, f"{question} (y/n): "[:msg_width - 4])
+            overlay.refresh()
+
+            while True:
+                ch = overlay.getch()
+                if ch == ord('y') or ch == ord('Y'):
+                    return True
+                elif ch == ord('n') or ch == ord('N') or ch == ord('q') or ch == 27:
+                    return False
+        except curses.error:
+            return False
+
+    def _prompt_for_comment_vim(self, stdscr, ticket_key: str, height: int, width: int) -> Optional[str]:
+        """Prompt for comment using vim editor. Returns comment text or None if cancelled."""
+        import tempfile
+        import os
+
+        # Get ticket details for context
+        with self.loading_lock:
+            ticket = self.ticket_cache.get(ticket_key)
+
+        if not ticket:
+            ticket = self.viewer.fetch_ticket_details(ticket_key)
+
+        if not ticket:
+            return None
+
+        # Create temp file with ticket info as comments
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+            temp_path = f.name
+            fields = ticket.get('fields', {})
+
+            f.write(f"# Ticket: {ticket_key}\n")
+            f.write(f"# Summary: {fields.get('summary', '')}\n")
+            f.write(f"# Status: {(fields.get('status') or {}).get('name', '')}\n")
+            f.write(f"# Assignee: {(fields.get('assignee') or {}).get('displayName', 'Unassigned')}\n")
+            f.write(f"#\n")
+            f.write(f"# Enter your comment below (lines starting with # will be ignored):\n")
+            f.write(f"#\n")
+            f.write("\n")
+
+        # Open vim editor
+        curses.def_prog_mode()
+        curses.endwin()
+
+        try:
+            subprocess.call(['vim', temp_path])
+        finally:
+            curses.reset_prog_mode()
+            stdscr.refresh()
+
+        # Read comment from file
+        try:
+            with open(temp_path, 'r') as f:
+                lines = f.readlines()
+
+            # Remove comment lines and empty trailing lines
+            comment_lines = [line.rstrip() for line in lines if not line.strip().startswith('#')]
+            comment_text = '\n'.join(comment_lines).strip()
+
+            # Clean up temp file
+            os.unlink(temp_path)
+
+            return comment_text if comment_text else None
+
+        except Exception:
+            return None
+
+    def _add_comment_to_ticket(self, ticket_key: str, comment_text: str) -> bool:
+        """Add a comment to a ticket. Returns True if successful."""
+        try:
+            # Convert plain text to Atlassian Document Format (ADF)
+            adf_body = self._text_to_adf(comment_text)
+
+            # Post comment via Jira API
+            endpoint = f"/issue/{ticket_key}/comment"
+            payload = {"body": adf_body}
+            response = self.viewer.utils.call_jira_api(endpoint, method='POST', data=payload)
+
+            return response is not None
+        except Exception:
+            return False
 
     def _handle_flags(self, stdscr, ticket_key: str, height: int, width: int):
         """Handle flag toggling (f key)."""
