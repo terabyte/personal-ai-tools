@@ -822,19 +822,25 @@ class JiraTUI:
             overlay.box()
             overlay.addstr(0, 2, " Select Transition ", curses.A_BOLD)
 
-            # List transitions (show warning if truncated)
+            # List transitions with underlined first letters
             for idx in range(max_visible):
                 transition = transitions[idx]
                 name = transition.get('name', 'Unknown')
                 # Show target state name
                 to_status = transition.get('to', {}).get('name', '')
-                display = f"{idx + 1}. {name} -> {to_status}"
-                overlay.addstr(idx + 2, 2, display[:overlay_width - 6])
+
+                # Underline first letter of transition name
+                prefix = f"{idx + 1}. "
+                overlay.addstr(idx + 2, 2, prefix)
+                if name:
+                    overlay.addstr(idx + 2, 2 + len(prefix), name[0], curses.A_UNDERLINE)
+                    rest = f"{name[1:]} -> {to_status}"
+                    overlay.addstr(idx + 2, 2 + len(prefix) + 1, rest[:overlay_width - 6 - len(prefix) - 1])
 
             if len(transitions) > max_visible:
                 overlay.addstr(max_visible + 2, 2, f"... and {len(transitions) - max_visible} more")
 
-            overlay.addstr(overlay_height - 2, 2, "Enter number or q to cancel: ")
+            overlay.addstr(overlay_height - 2, 2, "Enter number, first letter, or q to cancel: ")
             overlay.refresh()
 
             # Get user input
@@ -851,6 +857,14 @@ class JiraTUI:
                     input_str = input_str[:-1]
                 elif chr(ch).isdigit():
                     input_str += chr(ch)
+                elif chr(ch).isalpha() and not input_str:
+                    # First letter shortcut - find matching transition
+                    letter = chr(ch).lower()
+                    for idx, transition in enumerate(transitions):
+                        name = transition.get('name', '')
+                        if name and name[0].lower() == letter:
+                            input_str = str(idx + 1)
+                            break
 
             curses.noecho()
 
@@ -966,16 +980,22 @@ class JiraTUI:
             overlay.box()
             overlay.addstr(0, 2, " Select Resolution ", curses.A_BOLD)
 
-            # List resolutions
+            # List resolutions with underlined first letters
             for idx in range(max_visible):
                 resolution = resolutions[idx]
                 name = resolution.get('name', 'Unknown')
-                overlay.addstr(idx + 2, 2, f"{idx + 1}. {name[:overlay_width - 6]}")
+
+                # Underline first letter of resolution name
+                prefix = f"{idx + 1}. "
+                overlay.addstr(idx + 2, 2, prefix)
+                if name:
+                    overlay.addstr(idx + 2, 2 + len(prefix), name[0], curses.A_UNDERLINE)
+                    overlay.addstr(idx + 2, 2 + len(prefix) + 1, name[1:overlay_width - 6 - len(prefix) - 1])
 
             if len(resolutions) > max_visible:
                 overlay.addstr(max_visible + 2, 2, f"... and {len(resolutions) - max_visible} more")
 
-            overlay.addstr(overlay_height - 2, 2, "Enter number or q to cancel: ")
+            overlay.addstr(overlay_height - 2, 2, "Enter number, first letter, or q to cancel: ")
             overlay.refresh()
 
             # Get user input
@@ -992,6 +1012,14 @@ class JiraTUI:
                     input_str = input_str[:-1]
                 elif chr(ch).isdigit():
                     input_str += chr(ch)
+                elif chr(ch).isalpha() and not input_str:
+                    # First letter shortcut - find matching resolution
+                    letter = chr(ch).lower()
+                    for idx, resolution in enumerate(resolutions):
+                        name = resolution.get('name', '')
+                        if name and name[0].lower() == letter:
+                            input_str = str(idx + 1)
+                            break
 
             curses.noecho()
 
@@ -2294,9 +2322,13 @@ class JiraTUI:
 
                 for idx, (action, label) in enumerate(options):
                     attr = curses.A_REVERSE if idx == cursor_pos else curses.A_NORMAL
-                    overlay.addstr(idx + 2, 2, f" {idx + 1}. {label}", attr)
+                    # Highlight first letter
+                    first_letter = label[0].lower()
+                    overlay.addstr(idx + 2, 2, f" {idx + 1}. ", attr)
+                    overlay.addstr(idx + 2, 2 + len(f" {idx + 1}. "), label[0], attr | curses.A_UNDERLINE)
+                    overlay.addstr(idx + 2, 2 + len(f" {idx + 1}. ") + 1, label[1:], attr)
 
-                overlay.addstr(menu_height - 1, 2, "Enter: select  q: cancel")
+                overlay.addstr(menu_height - 1, 2, "a/r or Enter: select  q: cancel")
                 overlay.refresh()
 
                 ch = overlay.getch()
@@ -2310,6 +2342,11 @@ class JiraTUI:
                 elif ch == ord('\n'):  # Enter
                     action, _ = options[cursor_pos]
                     return action
+                elif ch == ord('a') or ch == ord('A'):  # Add
+                    return 'add'
+                elif ch == ord('r') or ch == ord('R'):  # Remove
+                    if has_links:
+                        return 'remove'
 
         except curses.error:
             return None
@@ -2474,9 +2511,12 @@ class JiraTUI:
 
                 for idx, (direction, label) in enumerate(options):
                     attr = curses.A_REVERSE if idx == cursor_pos else curses.A_NORMAL
-                    overlay.addstr(idx + 2, 2, f" {idx + 1}. {label}", attr)
+                    # Highlight first letter
+                    overlay.addstr(idx + 2, 2, f" {idx + 1}. ", attr)
+                    overlay.addstr(idx + 2, 2 + len(f" {idx + 1}. "), label[0], attr | curses.A_UNDERLINE)
+                    overlay.addstr(idx + 2, 2 + len(f" {idx + 1}. ") + 1, label[1:], attr)
 
-                overlay.addstr(menu_height - 1, 2, "Enter: select  q: cancel")
+                overlay.addstr(menu_height - 1, 2, "i/o or Enter: select  q: cancel")
                 overlay.refresh()
 
                 ch = overlay.getch()
@@ -2490,6 +2530,10 @@ class JiraTUI:
                 elif ch == ord('\n'):  # Enter
                     direction, _ = options[cursor_pos]
                     return direction
+                elif ch == ord('i') or ch == ord('I'):  # Inward
+                    return 'inward'
+                elif ch == ord('o') or ch == ord('O'):  # Outward
+                    return 'outward'
 
         except curses.error:
             return None
