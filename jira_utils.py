@@ -14,6 +14,8 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+from jira_cache import JiraCache
+
 
 class JiraUtils:
     """Shared utilities for Jira API interactions and display formatting."""
@@ -21,6 +23,10 @@ class JiraUtils:
     def __init__(self, script_dir: Path = None):
         self.script_dir = script_dir or Path(__file__).parent
         self.jira_api = self.script_dir / "jira-api"
+
+        # Initialize cache with Jira URL from environment
+        jira_url = os.environ.get('JIRA_URL', 'https://indeed.atlassian.net')
+        self.cache = JiraCache(jira_url)
 
     def get_terminal_width(self) -> int:
         """Get terminal width, fallback to generous default for modern terminals."""
@@ -563,3 +569,98 @@ class JiraUtils:
         for team in config.sections():
             display_name = config.get(team, 'display_name', fallback=team)
             print(f"  {team} - {display_name}")
+
+    def get_link_types(self, force_refresh: bool = False) -> List[dict]:
+        """
+        Get issue link types from cache or API.
+
+        Args:
+            force_refresh: If True, bypass cache and fetch from API
+
+        Returns:
+            List of link type dicts with id, name, inward, outward
+        """
+        # Check if cache bypass is globally enabled
+        no_cache = os.environ.get('JIRA_NO_CACHE', 'false').lower() == 'true'
+        force_refresh = force_refresh or no_cache
+
+        cached = self.cache.get('link_types', force_refresh=force_refresh)
+        if cached:
+            return cached
+
+        # Fetch from API
+        response = self.call_jira_api('/issueLinkType')
+        if response and 'issueLinkTypes' in response:
+            link_types = response['issueLinkTypes']
+            if not no_cache:  # Only cache if not in no-cache mode
+                self.cache.set('link_types', link_types, ttl=86400)  # 24 hours
+            return link_types
+        return []
+
+    def get_users(self, query: str = None, max_results: int = 50,
+                  force_refresh: bool = False) -> List[dict]:
+        """
+        Search users with optional caching of full user list.
+
+        Args:
+            query: Search query for user search (optional)
+            max_results: Maximum number of results to return
+            force_refresh: If True, bypass cache and fetch from API
+
+        Returns:
+            List of user dicts with accountId, displayName, emailAddress
+        """
+        # Check if cache bypass is globally enabled
+        no_cache = os.environ.get('JIRA_NO_CACHE', 'false').lower() == 'true'
+        force_refresh = force_refresh or no_cache
+
+        # If no query, try cache for common list
+        if not query:
+            cached = self.cache.get('users', key='all', force_refresh=force_refresh)
+            if cached:
+                return cached[:max_results]
+
+        # Fetch from API
+        endpoint = f'/user/search?maxResults={max_results}'
+        if query:
+            endpoint += f'&query={query}'
+
+        response = self.call_jira_api(endpoint)
+        if response and isinstance(response, list):
+            # Cache full list if no query
+            if not query and not no_cache:
+                self.cache.set('users', response, ttl=3600, key='all')  # 1 hour
+            return response
+        return []
+
+    def get_issue_types(self, project_key: str, force_refresh: bool = False) -> List[dict]:
+        """
+        Get issue types for a project from cache or API.
+
+        Args:
+            project_key: Jira project key (e.g., 'CIPLAT')
+            force_refresh: If True, bypass cache and fetch from API
+
+        Returns:
+            List of issue type dicts with id, name, subtask
+        """
+        # Check if cache bypass is globally enabled
+        no_cache = os.environ.get('JIRA_NO_CACHE', 'false').lower() == 'true'
+        force_refresh = force_refresh or no_cache
+
+        cached = self.cache.get('issue_types', key=project_key, force_refresh=force_refresh)
+        if cached:
+            return cached
+
+        # Fetch from API
+        endpoint = f'/issue/createmeta?projectKeys={project_key}'
+        response = self.call_jira_api(endpoint)
+        if response and 'projects' in response:
+            # Extract issue types
+            projects = response['projects']
+            if projects and 'issuetypes' in projects[0]:
+                issue_types = projects[0]['issuetypes']
+                if not no_cache:  # Only cache if not in no-cache mode
+                    self.cache.set('issue_types', issue_types, ttl=86400, key=project_key)  # 24 hours
+                return issue_types
+        return []

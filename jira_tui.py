@@ -367,6 +367,8 @@ class JiraTUI:
                             selected_idx = min(selected_idx, len(tickets) - 1) if tickets else 0
                     else:
                         selected_idx = min(selected_idx, len(tickets) - 1) if tickets else 0
+            elif key == ord('R'):  # Cache refresh menu (Shift+R)
+                self._handle_cache_refresh(stdscr, height, width)
             elif key == ord('F'):  # Toggle full mode (capital F)
                 self.show_full = not self.show_full
             elif key == ord('v'):  # Open in browser
@@ -2112,6 +2114,84 @@ class JiraTUI:
         except curses.error:
             pass
 
+    def _handle_cache_refresh(self, stdscr, height: int, width: int):
+        """Handle cache refresh menu (Shift+R)."""
+        cache = self.viewer.utils.cache
+
+        # Build menu options with cache ages
+        options = [
+            ('link_types', 'Link Types', cache.get_age('link_types')),
+            ('users', 'Users', cache.get_age('users', key='all')),
+            ('all', 'All Cache', '')
+        ]
+
+        # Draw menu
+        menu_height = len(options) + 5
+        menu_width = min(60, width - 4)
+        start_y = (height - menu_height) // 2
+        start_x = (width - menu_width) // 2
+
+        cursor_pos = 0
+
+        try:
+            overlay = curses.newwin(menu_height, menu_width, start_y, start_x)
+
+            while True:
+                overlay.clear()
+                overlay.box()
+                overlay.addstr(0, 2, " Refresh Cache ", curses.A_BOLD)
+
+                # List options
+                for idx, (category, label, age) in enumerate(options):
+                    attr = curses.A_REVERSE if idx == cursor_pos else curses.A_NORMAL
+
+                    if age:
+                        option_text = f" {idx + 1}. {label} (cached {age})"
+                    else:
+                        option_text = f" {idx + 1}. {label}"
+
+                    overlay.addstr(idx + 2, 2, option_text[:menu_width - 4], attr)
+
+                overlay.addstr(menu_height - 2, 2, "Enter: refresh  q: cancel")
+                overlay.refresh()
+
+                # Get user input
+                ch = overlay.getch()
+
+                if ch == ord('q') or ch == 27:  # q or ESC
+                    return
+                elif ch in [curses.KEY_DOWN, ord('j')]:
+                    cursor_pos = min(cursor_pos + 1, len(options) - 1)
+                elif ch in [curses.KEY_UP, ord('k')]:
+                    cursor_pos = max(cursor_pos - 1, 0)
+                elif ch == ord('\n'):  # Enter to refresh
+                    category, label, _ = options[cursor_pos]
+
+                    # Show refreshing message
+                    overlay.clear()
+                    overlay.box()
+                    overlay.addstr(0, 2, " Refresh Cache ", curses.A_BOLD)
+                    overlay.addstr(menu_height // 2, 2, f"Refreshing {label.lower()}...")
+                    overlay.refresh()
+
+                    # Perform refresh
+                    if category == 'all':
+                        # Refresh all categories
+                        self.viewer.utils.get_link_types(force_refresh=True)
+                        self.viewer.utils.get_users(force_refresh=True)
+                        self._show_message(stdscr, "✓ Refreshed all cache", height, width)
+                    elif category == 'link_types':
+                        self.viewer.utils.get_link_types(force_refresh=True)
+                        self._show_message(stdscr, "✓ Refreshed link types cache", height, width)
+                    elif category == 'users':
+                        self.viewer.utils.get_users(force_refresh=True)
+                        self._show_message(stdscr, "✓ Refreshed users cache", height, width)
+
+                    return
+
+        except curses.error:
+            pass
+
     def _get_legend_items(self):
         """Get legend items with colors in the order they should appear."""
         # Order: Blue (backlog), Yellow (active), Green (done), Red (blocked)
@@ -2595,6 +2675,7 @@ class JiraTUI:
             "",
             "Actions:",
             "  r          Refresh current view",
+            "  R          Refresh cache (link types, users)",
             "  e          Edit ticket",
             "  f          Toggle flags",
             "  F          Toggle full mode (all comments)",
