@@ -971,9 +971,12 @@ class JiraTUI:
                 return (False, None, "Reporter cannot be empty")
             return (True, None, None)
 
-        # Handle currentUser() specially - pass through without resolution
+        # Handle currentUser() specially - resolve to actual accountId
         if input_value.lower() == 'currentuser()':
-            return (True, 'currentUser()', None)
+            current_user_id = self.viewer.utils.get_current_user_id()
+            if not current_user_id:
+                return (False, None, "Unable to get current user from API")
+            return (True, current_user_id, None)
 
         # Check cache first for exact match on formatted user string
         # This handles cases where user doesn't change the pre-filled value
@@ -2068,6 +2071,7 @@ class JiraTUI:
 
             # Optional fields - show with values if they were set
             template.append("# Optional fields (uncomment to use):")
+            template.append("# Users: Use 'None' to unassign, 'currentUser()' for yourself, or search by name/email/username (partial matches show picker)")
             assignee = previous_fields.get('assignee', '')
             if assignee:
                 template.append(f"assignee: {assignee}")
@@ -2115,6 +2119,7 @@ class JiraTUI:
                 "__END_OF_DESCRIPTION__",
                 "",
                 "# Optional fields (uncomment to use):",
+                "# Users: Use 'None' to unassign, 'currentUser()' for yourself, or search by name/email/username (partial matches show picker)",
                 "# assignee: currentUser()",
                 "# reporter: currentUser()",
                 "# priority: Medium",
@@ -2210,19 +2215,11 @@ class JiraTUI:
 
         # Add optional fields
         if 'assignee' in fields and fields['assignee']:
-            # Handle currentUser() specially
-            if fields['assignee'] == 'currentUser()':
-                payload['fields']['assignee'] = {"accountId": None}  # Will use current user
-            else:
-                # accountId already resolved by _resolve_all_user_fields()
-                payload['fields']['assignee'] = {"accountId": fields['assignee']}
+            # accountId already resolved by _resolve_all_user_fields()
+            payload['fields']['assignee'] = {"accountId": fields['assignee']}
 
         if 'reporter' in fields and fields['reporter']:
-            # Handle currentUser() specially
-            if fields['reporter'] == 'currentUser()':
-                payload['fields']['reporter'] = {"accountId": None}  # Will use current user
-            else:
-                # accountId already resolved by _resolve_all_user_fields()
+            # accountId already resolved by _resolve_all_user_fields()
                 payload['fields']['reporter'] = {"accountId": fields['reporter']}
 
         if 'priority' in fields and fields['priority']:
@@ -2324,6 +2321,7 @@ class JiraTUI:
             description,
             "__END_OF_DESCRIPTION__",
             "",
+            "# Users: Use 'None' to unassign, 'currentUser()' for yourself, or search by name/email/username (partial matches show picker)",
             f"assignee: {assignee_name}",
             f"reporter: {reporter_name}",
             f"priority: {priority_name}",
@@ -2441,23 +2439,15 @@ class JiraTUI:
 
         if 'assignee' in changes:
             if changes['assignee']:
-                # Handle currentUser() specially
-                if changes['assignee'] == 'currentUser()':
-                    update_payload['fields']['assignee'] = {"accountId": None}  # Current user
-                else:
-                    # accountId already resolved by _resolve_all_user_fields()
-                    update_payload['fields']['assignee'] = {"accountId": changes['assignee']}
+                # accountId already resolved by _resolve_all_user_fields()
+                update_payload['fields']['assignee'] = {"accountId": changes['assignee']}
             else:
                 update_payload['fields']['assignee'] = None
 
         if 'reporter' in changes:
             if changes['reporter']:
-                # Handle currentUser() specially
-                if changes['reporter'] == 'currentUser()':
-                    update_payload['fields']['reporter'] = {"accountId": None}  # Current user
-                else:
-                    # accountId already resolved by _resolve_all_user_fields()
-                    update_payload['fields']['reporter'] = {"accountId": changes['reporter']}
+                # accountId already resolved by _resolve_all_user_fields()
+                update_payload['fields']['reporter'] = {"accountId": changes['reporter']}
             else:
                 # Reporter field cannot be null in Jira
                 return (False, "Reporter cannot be empty")

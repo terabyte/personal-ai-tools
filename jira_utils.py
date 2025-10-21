@@ -31,6 +31,9 @@ class JiraUtils:
         # In-memory user cache: accountId -> user dict
         self._user_cache: Dict[str, dict] = {}
 
+        # Current user cache (accountId of the authenticated user)
+        self._current_user_id: Optional[str] = None
+
     def get_terminal_width(self) -> int:
         """Get terminal width, fallback to generous default for modern terminals."""
         try:
@@ -687,6 +690,29 @@ class JiraUtils:
             User dict or None if not cached
         """
         return self._user_cache.get(account_id)
+
+    def get_current_user_id(self) -> Optional[str]:
+        """Get the accountId of the currently authenticated user.
+
+        Returns:
+            accountId of current user, or None if unable to fetch
+        """
+        # Return cached value if available
+        if self._current_user_id:
+            return self._current_user_id
+
+        # Fetch from API
+        response = self.call_jira_api('/myself')
+        if not response or 'accountId' not in response:
+            return None
+
+        # Cache for future use
+        self._current_user_id = response['accountId']
+
+        # Also cache the user object
+        self.cache_user(response)
+
+        return self._current_user_id
 
     def format_user(self, user: Optional[dict]) -> str:
         """Format user for display as 'Real Name (username)'.
