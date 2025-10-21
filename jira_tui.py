@@ -6,6 +6,7 @@ Provides a split-pane interface with vim keybindings for browsing tickets
 """
 
 import json
+import os
 import sys
 import subprocess
 import webbrowser
@@ -399,6 +400,14 @@ class JiraTUI:
                 if tickets and selected_idx < len(tickets):
                     current_key = tickets[selected_idx].get('key')
                     self._open_in_browser(current_key)
+            elif key == ord('y'):  # Copy URL to clipboard (yank)
+                if tickets and selected_idx < len(tickets):
+                    current_key = tickets[selected_idx].get('key')
+                    success, error_msg = self._copy_url_to_clipboard(current_key)
+                    if success:
+                        self._show_message(stdscr, f"✓ URL copied to clipboard", height, width, duration=1500)
+                    else:
+                        self._show_message(stdscr, f"✗ Copy failed: {error_msg}", height, width, duration=3000)
             elif key == ord('/'):  # Search
                 # Remember current ticket key before filtering
                 current_ticket_key = tickets[selected_idx].get('key') if tickets and selected_idx < len(tickets) else None
@@ -3653,7 +3662,7 @@ class JiraTUI:
             if not self.loading_complete:
                 status_left += f" [Loading {self.loading_count}/{self.loading_total}]"
 
-        status_right = " q:quit j/k:move g/G:top/bot r:refresh e:edit t:transition f:flags c:comment v:browser ?:help "
+        status_right = " q:quit j/k:move g/G:top/bot r:refresh e:edit t:transition f:flags c:comment v:browser y:copy-url ?:help "
 
         # Calculate spacing
         padding = width - len(status_left) - len(status_right)
@@ -3688,6 +3697,7 @@ class JiraTUI:
             "  f          Toggle flags",
             "  F          Toggle full mode (all comments)",
             "  v          Open ticket in browser",
+            "  y          Copy ticket URL to clipboard (yank)",
             "  t          Transition ticket",
             "  c          Add comment to ticket",
             "  l          Manage issue links",
@@ -3802,3 +3812,92 @@ class JiraTUI:
         except Exception:
             # Silently fail - TUI will continue running
             pass
+
+    def _copy_url_to_clipboard(self, ticket_key: str) -> tuple:
+        """Copy ticket URL to clipboard. Returns (success, error_msg)."""
+        # Get Jira URL from environment, fallback to default
+        jira_url = os.environ.get('JIRA_URL', 'https://indeed.atlassian.net')
+        url = f"{jira_url}/browse/{ticket_key}"
+
+        last_error = None
+
+        try:
+            # Try different clipboard tools based on platform
+            if sys.platform.startswith('linux'):
+                # Try xclip first (X11)
+                try:
+                    result = subprocess.run(['xclip', '-selection', 'clipboard'],
+                                   input=url.encode('utf-8'),
+                                   timeout=1,
+                                   capture_output=True)
+                    if result.returncode == 0:
+                        return (True, None)
+                    last_error = f"xclip: {result.stderr.decode('utf-8').strip()}"
+                except FileNotFoundError:
+                    last_error = "xclip not found"
+                except subprocess.TimeoutExpired:
+                    last_error = "xclip timeout"
+
+                # Try xsel as fallback (X11)
+                try:
+                    result = subprocess.run(['xsel', '--clipboard', '--input'],
+                                   input=url.encode('utf-8'),
+                                   timeout=1,
+                                   capture_output=True)
+                    if result.returncode == 0:
+                        return (True, None)
+                    last_error = f"xsel: {result.stderr.decode('utf-8').strip()}"
+                except FileNotFoundError:
+                    last_error = "xsel not found"
+                except subprocess.TimeoutExpired:
+                    last_error = "xsel timeout"
+
+                # Try wl-copy for Wayland
+                try:
+                    result = subprocess.run(['wl-copy'],
+                                   input=url.encode('utf-8'),
+                                   timeout=1,
+                                   capture_output=True)
+                    if result.returncode == 0:
+                        return (True, None)
+                    last_error = f"wl-copy: {result.stderr.decode('utf-8').strip()}"
+                except FileNotFoundError:
+                    last_error = "wl-copy not found"
+                except subprocess.TimeoutExpired:
+                    last_error = "wl-copy timeout"
+
+            elif sys.platform == 'darwin':
+                # macOS pbcopy (should always be available)
+                try:
+                    result = subprocess.run(['pbcopy'],
+                                   input=url.encode('utf-8'),
+                                   timeout=1,
+                                   capture_output=True)
+                    if result.returncode == 0:
+                        return (True, None)
+                    last_error = f"pbcopy: {result.stderr.decode('utf-8').strip()}"
+                except FileNotFoundError:
+                    last_error = "pbcopy not found"
+                except subprocess.TimeoutExpired:
+                    last_error = "pbcopy timeout"
+
+            elif sys.platform == 'win32':
+                # Windows clip
+                try:
+                    result = subprocess.run(['clip'],
+                                   input=url.encode('utf-8'),
+                                   timeout=1,
+                                   capture_output=True,
+                                   shell=True)
+                    if result.returncode == 0:
+                        return (True, None)
+                    last_error = f"clip: {result.stderr.decode('utf-8').strip()}"
+                except FileNotFoundError:
+                    last_error = "clip not found"
+                except subprocess.TimeoutExpired:
+                    last_error = "clip timeout"
+
+        except Exception as e:
+            last_error = str(e)
+
+        return (False, last_error or "No clipboard tool available")
