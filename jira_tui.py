@@ -208,6 +208,16 @@ class JiraTUI:
                 if ticket_key:
                     # Store the full ticket data (already includes all fields from JQL query)
                     self.ticket_cache[ticket_key] = ticket
+
+                    # Populate user cache from assignee and reporter
+                    fields = ticket.get('fields', {})
+                    assignee = fields.get('assignee')
+                    reporter = fields.get('reporter')
+                    if assignee:
+                        self.viewer.utils.cache_user(assignee)
+                    if reporter:
+                        self.viewer.utils.cache_user(reporter)
+
             self.loading_count = len(tickets)
             self.loading_total = len(tickets)
             self.loading_complete = True
@@ -865,12 +875,8 @@ class JiraTUI:
                     options.append(("__NONE__", "(Unassigned)"))
 
                 for user in filtered:
-                    display_name = user.get('displayName', 'Unknown')
-                    email = user.get('emailAddress', '')
-                    if email:
-                        label = f"{display_name} ({email})"
-                    else:
-                        label = display_name
+                    # Use consistent formatting: "Real Name (username)"
+                    label = self.viewer.utils.format_user(user)
                     options.append((user.get('accountId'), label))
 
                 cursor_pos = min(cursor_pos, len(options) - 1) if options else 0
@@ -968,6 +974,14 @@ class JiraTUI:
         # Handle currentUser() specially - pass through without resolution
         if input_value.lower() == 'currentuser()':
             return (True, 'currentUser()', None)
+
+        # Check cache first for exact match on formatted user string
+        # This handles cases where user doesn't change the pre-filled value
+        cache = self.viewer.utils._user_cache
+        for account_id, user in cache.items():
+            formatted = self.viewer.utils.format_user(user)
+            if formatted == input_value:
+                return (True, account_id, None)
 
         # Search users with the input as query (real-time API search)
         # Note: Jira API requires at least 2 characters for meaningful results
@@ -2281,11 +2295,12 @@ class JiraTUI:
         description_adf = fields.get('description', {})
         description = self._adf_to_text(description_adf) if description_adf else ''
 
+        # Format users consistently as "Real Name (username)"
         assignee = fields.get('assignee')
-        assignee_name = assignee.get('displayName', '') if assignee else 'None'
+        assignee_name = self.viewer.utils.format_user(assignee) if assignee else 'None'
 
         reporter = fields.get('reporter')
-        reporter_name = reporter.get('displayName', '') if reporter else ''
+        reporter_name = self.viewer.utils.format_user(reporter) if reporter else ''
 
         priority = fields.get('priority')
         priority_name = priority.get('name', '') if priority else ''
@@ -2378,11 +2393,12 @@ class JiraTUI:
         description_adf = fields.get('description', {})
         description = self._adf_to_text(description_adf) if description_adf else ''
 
+        # Format users consistently as "Real Name (username)"
         assignee = fields.get('assignee')
-        assignee_name = assignee.get('displayName', '') if assignee else 'None'
+        assignee_name = self.viewer.utils.format_user(assignee) if assignee else 'None'
 
         reporter = fields.get('reporter')
-        reporter_name = reporter.get('displayName', '') if reporter else ''
+        reporter_name = self.viewer.utils.format_user(reporter) if reporter else ''
 
         priority = fields.get('priority')
         priority_name = priority.get('name', '') if priority else ''

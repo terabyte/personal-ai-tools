@@ -28,6 +28,9 @@ class JiraUtils:
         jira_url = os.environ.get('JIRA_URL', 'https://indeed.atlassian.net')
         self.cache = JiraCache(jira_url)
 
+        # In-memory user cache: accountId -> user dict
+        self._user_cache: Dict[str, dict] = {}
+
     def get_terminal_width(self) -> int:
         """Get terminal width, fallback to generous default for modern terminals."""
         try:
@@ -656,7 +659,79 @@ class JiraUtils:
         if not response or not isinstance(response, list):
             return []
 
+        # Cache the search results
+        for user in response:
+            self.cache_user(user)
+
         return response
+
+    def cache_user(self, user: dict) -> None:
+        """Add a user to the in-memory cache.
+
+        Args:
+            user: User dict with accountId, displayName, emailAddress
+        """
+        account_id = user.get('accountId')
+        if account_id:
+            self._user_cache[account_id] = user
+
+    def get_cached_user(self, account_id: str) -> Optional[dict]:
+        """Get user from cache by accountId.
+
+        Args:
+            account_id: Jira accountId
+
+        Returns:
+            User dict or None if not cached
+        """
+        return self._user_cache.get(account_id)
+
+    def format_user(self, user: Optional[dict]) -> str:
+        """Format user for display as 'Real Name (username)'.
+
+        Args:
+            user: User dict with displayName, emailAddress, or None
+
+        Returns:
+            Formatted string like 'Carl Myers (cmyers)' or 'None' if user is None
+        """
+        if not user:
+            return 'None'
+
+        display_name = user.get('displayName', 'Unknown')
+        email = user.get('emailAddress', '')
+
+        # Extract username from email (prefix before @)
+        if email and '@' in email:
+            username = email.split('@')[0]
+            return f"{display_name} ({username})"
+
+        # If no email, check if displayName looks like an email
+        if '@' in display_name:
+            username = display_name.split('@')[0].strip()
+            return f"{display_name} ({username})"
+
+        # No email info available
+        return display_name
+
+    def format_user_by_id(self, account_id: Optional[str]) -> str:
+        """Format user by accountId, looking up from cache.
+
+        Args:
+            account_id: Jira accountId or None
+
+        Returns:
+            Formatted user string or 'None' if not found
+        """
+        if not account_id:
+            return 'None'
+
+        user = self.get_cached_user(account_id)
+        if user:
+            return self.format_user(user)
+
+        # Not in cache - return accountId as fallback
+        return f"[{account_id[:8]}...]"
 
     def get_issue_types(self, project_key: str, force_refresh: bool = False) -> List[dict]:
         """
