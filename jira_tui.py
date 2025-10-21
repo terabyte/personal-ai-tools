@@ -800,6 +800,271 @@ class JiraTUI:
             # Shutdown executor without waiting for pending tasks
             executor.shutdown(wait=False)
 
+    def _find_exact_user_matches(self, users: List[dict], query: str) -> List[dict]:
+        """Find users with exact matches on displayName, email, or email prefix.
+
+        Note: Jira API sometimes returns empty emailAddress fields, so we also
+        check if displayName looks like an email and extract prefix from that.
+
+        Args:
+            users: List of user dicts from Jira
+            query: Search query from user input
+
+        Returns:
+            List of users that exactly match the query
+        """
+        query_lower = query.lower().strip()
+        exact_matches = []
+
+        for user in users:
+            display_name = user.get('displayName', '').lower()
+            email = user.get('emailAddress', '').lower()
+
+            # Extract email prefix from emailAddress field if available
+            email_prefix = email.split('@')[0] if '@' in email and email else ''
+
+            # Also check if displayName is email-like (contains @) and extract prefix
+            display_email_prefix = ''
+            if '@' in display_name:
+                display_email_prefix = display_name.split('@')[0].strip()
+
+            # Exact match on any of: displayName, full email, email prefix, or display name prefix
+            if query_lower in [display_name, email, email_prefix, display_email_prefix]:
+                exact_matches.append(user)
+
+        return exact_matches
+
+    def _prompt_for_user_selection(self, users: List[dict], query: str,
+                                   field_name: str, allow_none: bool,
+                                   stdscr, height: int, width: int):
+        """Show interactive user picker. Returns accountId, None (unassigned), or False (cancelled)."""
+        menu_height = min(len(users) + 8, height - 4)
+        menu_width = min(70, width - 4)
+        start_y = (height - menu_height) // 2
+        start_x = (width - menu_width) // 2
+
+        cursor_pos = 0
+        search_filter = query or ""
+        type_buffer = ""
+
+        try:
+            overlay = curses.newwin(menu_height, menu_width, start_y, start_x)
+
+            while True:
+                # Filter users by search
+                filtered = users
+                if search_filter:
+                    search_lower = search_filter.lower()
+                    filtered = [u for u in users if
+                               search_lower in u.get('displayName', '').lower() or
+                               search_lower in u.get('emailAddress', '').lower()]
+
+                # Build display list
+                options = []
+                if allow_none:
+                    options.append(("__NONE__", "(Unassigned)"))
+
+                for user in filtered:
+                    display_name = user.get('displayName', 'Unknown')
+                    email = user.get('emailAddress', '')
+                    if email:
+                        label = f"{display_name} ({email})"
+                    else:
+                        label = display_name
+                    options.append((user.get('accountId'), label))
+
+                cursor_pos = min(cursor_pos, len(options) - 1) if options else 0
+
+                overlay.clear()
+                overlay.box()
+                overlay.addstr(0, 2, f" Select {field_name} ", curses.A_BOLD)
+
+                # Show search filter or type buffer
+                if search_filter:
+                    overlay.addstr(1, 2, f"Filter: {search_filter}", curses.A_DIM)
+                elif type_buffer:
+                    overlay.addstr(1, 2, f"Search: {type_buffer}", curses.A_DIM)
+
+                # List options with scrolling
+                visible_height = menu_height - 5
+                start_idx = max(0, cursor_pos - visible_height + 1) if cursor_pos >= visible_height else 0
+
+                for idx in range(start_idx, min(start_idx + visible_height, len(options))):
+                    _, label = options[idx]
+                    attr = curses.A_REVERSE if idx == cursor_pos else curses.A_NORMAL
+                    overlay.addstr(idx - start_idx + 2, 2, label[:menu_width - 4], attr)
+
+                # Footer
+                overlay.addstr(menu_height - 2, 2, f"Showing {len(options)} users")
+                overlay.addstr(menu_height - 1, 2, "Enter: select  /: filter  q: cancel")
+                overlay.refresh()
+
+                # Handle input
+                ch = overlay.getch()
+
+                if ch == ord('q') or ch == 27:  # q or ESC
+                    return False  # Cancelled
+                elif ch in [curses.KEY_DOWN, ord('j')]:
+                    cursor_pos = min(cursor_pos + 1, len(options) - 1)
+                    type_buffer = ""  # Clear type buffer on navigation
+                elif ch in [curses.KEY_UP, ord('k')]:
+                    cursor_pos = max(cursor_pos - 1, 0)
+                    type_buffer = ""  # Clear type buffer on navigation
+                elif ch == ord('/'):  # Start filtering
+                    curses.echo()
+                    curses.curs_set(1)
+                    overlay.addstr(menu_height - 3, 2, "Filter: ")
+                    overlay.clrtoeol()
+                    overlay.refresh()
+                    filter_input = overlay.getstr(menu_height - 3, 10, menu_width - 14).decode('utf-8', errors='ignore')
+                    curses.noecho()
+                    curses.curs_set(0)
+                    search_filter = filter_input.strip()
+                    type_buffer = ""
+                    cursor_pos = 0
+                elif ch == ord('\n'):  # Enter to select
+                    if options:
+                        account_id, _ = options[cursor_pos]
+                        return None if account_id == "__NONE__" else account_id
+                elif ch == curses.KEY_BACKSPACE or ch == 127:  # Backspace
+                    if type_buffer:
+                        type_buffer = type_buffer[:-1]
+                        # Apply filter with shortened buffer
+                        if type_buffer:
+                            search_filter = type_buffer
+                            cursor_pos = 0
+                elif 32 <= ch <= 126:  # Printable ASCII - type-to-search
+                    char = chr(ch)
+                    type_buffer += char
+                    search_filter = type_buffer
+                    cursor_pos = 0
+
+        except curses.error:
+            return False
+
+    def _resolve_user_field(self, field_name: str, input_value: str,
+                            stdscr, height: int, width: int) -> tuple:
+        """Resolve user input to accountId. Returns (success, accountId_or_None, error_msg).
+
+        Args:
+            field_name: Field name ('assignee' or 'reporter')
+            input_value: User's text input from template
+            stdscr: Curses screen object
+            height: Terminal height
+            width: Terminal width
+
+        Returns:
+            Tuple of (success: bool, accountId or None, error_msg: str or None)
+        """
+        input_value = input_value.strip()
+
+        # Handle empty or "None"
+        if not input_value or input_value.lower() == 'none':
+            # Only assignee can be None, reporter is required
+            if field_name == 'reporter':
+                return (False, None, "Reporter cannot be empty")
+            return (True, None, None)
+
+        # Handle currentUser() specially - pass through without resolution
+        if input_value.lower() == 'currentuser()':
+            return (True, 'currentUser()', None)
+
+        # Search users with the input as query (real-time API search)
+        # Note: Jira API requires at least 2 characters for meaningful results
+        if len(input_value) < 2:
+            return (False, None, f"Search query too short - need at least 2 characters")
+
+        all_users = self.viewer.utils.get_users(query=input_value)
+
+        if not all_users:
+            return (False, None, f"No users found matching '{input_value}'")
+
+        # Find exact matches (displayName, email, email prefix)
+        exact_matches = self._find_exact_user_matches(all_users, input_value)
+
+        if len(exact_matches) == 1:
+            # Perfect match - auto-select
+            return (True, exact_matches[0].get('accountId'), None)
+        elif len(exact_matches) > 1:
+            # Multiple exact matches - show picker with exact matches only
+            allow_none = (field_name == 'assignee')
+            result = self._prompt_for_user_selection(
+                exact_matches, input_value, field_name, allow_none,
+                stdscr, height, width)
+
+            if result is False:
+                return (False, None, None)  # User cancelled
+
+            return (True, result, None)
+
+        # Find substring matches for picker (including email prefix)
+        # Note: Jira API sometimes returns empty emailAddress, so check displayName too
+        query_lower = input_value.lower()
+        substring_matches = []
+        for u in all_users:
+            display_name = u.get('displayName', '').lower()
+            email = u.get('emailAddress', '').lower()
+
+            # Extract email prefix from emailAddress if available
+            email_prefix = email.split('@')[0] if '@' in email and email else ''
+
+            # Also check displayName if it looks like an email
+            display_email_prefix = ''
+            if '@' in display_name:
+                display_email_prefix = display_name.split('@')[0].strip()
+
+            if (query_lower in display_name or
+                query_lower in email or
+                query_lower in email_prefix or
+                query_lower in display_email_prefix):
+                substring_matches.append(u)
+
+        if len(substring_matches) == 0:
+            return (False, None, f"No users found matching '{input_value}' (searched {len(all_users)} users)")
+
+        # Multiple matches - show picker
+        allow_none = (field_name == 'assignee')
+        result = self._prompt_for_user_selection(
+            substring_matches, input_value, field_name, allow_none,
+            stdscr, height, width)
+
+        if result is False:
+            return (False, None, None)  # User cancelled
+
+        return (True, result, None)  # result is accountId or None
+
+    def _resolve_all_user_fields(self, fields: dict, stdscr, height: int, width: int) -> tuple:
+        """Resolve all user fields in dict. Returns (success, resolved_fields_or_error_msg).
+
+        Args:
+            fields: Dictionary of field names to values
+            stdscr: Curses screen object
+            height: Terminal height
+            width: Terminal width
+
+        Returns:
+            Tuple of (success: bool, resolved_fields or error_message)
+        """
+        resolved = fields.copy()
+
+        for field_name in ['assignee', 'reporter']:
+            if field_name not in fields:
+                continue
+
+            raw_value = fields[field_name]
+            success, account_id, error_msg = self._resolve_user_field(
+                field_name, raw_value, stdscr, height, width)
+
+            if not success:
+                if error_msg:
+                    return (False, f"{field_name}: {error_msg}")
+                else:
+                    return (False, None)  # User cancelled
+
+            resolved[field_name] = account_id
+
+        return (True, resolved)
+
     def _handle_transition(self, stdscr, ticket_key: str, height: int, width: int):
         """Handle ticket transition (T key)."""
         # Get transitions with field info from API
@@ -1367,8 +1632,19 @@ class JiraTUI:
                     self._show_message(stdscr, "Issue creation cancelled (empty)", height, width)
                     return None
 
-                # Create issue
-                success, result = self._create_jira_issue(fields)
+                # Resolve user fields (assignee, reporter)
+                success, resolved = self._resolve_all_user_fields(fields, stdscr, height, width)
+                if not success:
+                    if resolved:  # Error message - retry
+                        previous_fields = fields
+                        error_message = resolved
+                        continue
+                    else:  # User cancelled
+                        self._show_message(stdscr, "Issue creation cancelled", height, width)
+                        return None
+
+                # Create issue with resolved accountIds
+                success, result = self._create_jira_issue(resolved)
                 if success:
                     self._show_message(stdscr, f"✓ Created issue: {result}", height, width)
                     return result
@@ -1449,7 +1725,19 @@ class JiraTUI:
                     self._show_message(stdscr, "Edit cancelled (no changes)", height, width)
                     return
 
-                # Update issue
+                # Resolve user fields in changes (assignee, reporter)
+                if changes:
+                    success, resolved = self._resolve_all_user_fields(changes, stdscr, height, width)
+                    if not success:
+                        if resolved:  # Error message - retry
+                            error_message = resolved
+                            continue
+                        else:  # User cancelled
+                            self._show_message(stdscr, "Edit cancelled", height, width)
+                            return
+                    changes = resolved
+
+                # Update issue with resolved accountIds
                 success, result = self._update_jira_issue(ticket_key, changes, comment_text)
                 if success:
                     msg = f"✓ Updated {ticket_key}"
@@ -1738,6 +2026,10 @@ class JiraTUI:
             "# Issue Types: Task, Bug, New Feature, Improvement",
             "# Priorities: Critical, High, Medium, Low",
             "#",
+            "# For assignee/reporter: use Full Name, email, or username",
+            "#   - 'None' for unassigned (assignee only)",
+            "#   - Will prompt with picker for multiple matches",
+            "#",
             ""
         ])
 
@@ -1763,6 +2055,12 @@ class JiraTUI:
                 template.append(f"assignee: {assignee}")
             else:
                 template.append("# assignee: currentUser()")
+
+            reporter = previous_fields.get('reporter', '')
+            if reporter:
+                template.append(f"reporter: {reporter}")
+            else:
+                template.append("# reporter: currentUser()")
 
             priority = previous_fields.get('priority', '')
             if priority:
@@ -1800,6 +2098,7 @@ class JiraTUI:
                 "",
                 "# Optional fields (uncomment to use):",
                 "# assignee: currentUser()",
+                "# reporter: currentUser()",
                 "# priority: Medium",
                 "# labels: ",
                 "# story_points: ",
@@ -1897,7 +2196,16 @@ class JiraTUI:
             if fields['assignee'] == 'currentUser()':
                 payload['fields']['assignee'] = {"accountId": None}  # Will use current user
             else:
+                # accountId already resolved by _resolve_all_user_fields()
                 payload['fields']['assignee'] = {"accountId": fields['assignee']}
+
+        if 'reporter' in fields and fields['reporter']:
+            # Handle currentUser() specially
+            if fields['reporter'] == 'currentUser()':
+                payload['fields']['reporter'] = {"accountId": None}  # Will use current user
+            else:
+                # accountId already resolved by _resolve_all_user_fields()
+                payload['fields']['reporter'] = {"accountId": fields['reporter']}
 
         if 'priority' in fields and fields['priority']:
             payload['fields']['priority'] = {"name": fields['priority']}
@@ -1955,6 +2263,9 @@ class JiraTUI:
             "# Leave field unchanged to keep current value",
             "# Clear a field by leaving it empty",
             "#",
+            "# For assignee/reporter: use Full Name, email, or username",
+            "#   - 'None' for unassigned (assignee only)",
+            "#",
             "",
             "# Add a comment with this update (optional):",
             "comment:",
@@ -1971,7 +2282,10 @@ class JiraTUI:
         description = self._adf_to_text(description_adf) if description_adf else ''
 
         assignee = fields.get('assignee')
-        assignee_name = assignee.get('displayName', '') if assignee else ''
+        assignee_name = assignee.get('displayName', '') if assignee else 'None'
+
+        reporter = fields.get('reporter')
+        reporter_name = reporter.get('displayName', '') if reporter else ''
 
         priority = fields.get('priority')
         priority_name = priority.get('name', '') if priority else ''
@@ -1992,6 +2306,7 @@ class JiraTUI:
             "__END_OF_DESCRIPTION__",
             "",
             f"assignee: {assignee_name}",
+            f"reporter: {reporter_name}",
             f"priority: {priority_name}",
             f"labels: {labels_str}",
             f"story_points: {story_points}",
@@ -2064,7 +2379,10 @@ class JiraTUI:
         description = self._adf_to_text(description_adf) if description_adf else ''
 
         assignee = fields.get('assignee')
-        assignee_name = assignee.get('displayName', '') if assignee else ''
+        assignee_name = assignee.get('displayName', '') if assignee else 'None'
+
+        reporter = fields.get('reporter')
+        reporter_name = reporter.get('displayName', '') if reporter else ''
 
         priority = fields.get('priority')
         priority_name = priority.get('name', '') if priority else ''
@@ -2076,6 +2394,7 @@ class JiraTUI:
             'summary': fields.get('summary', ''),
             'description': description,
             'assignee': assignee_name,
+            'reporter': reporter_name,
             'priority': priority_name,
             'labels': labels_str,
             'story_points': str(fields.get('customfield_10061', '')),
@@ -2102,12 +2421,26 @@ class JiraTUI:
 
         if 'assignee' in changes:
             if changes['assignee']:
-                # Try to find user by display name
-                # For now, just set to null (unassigned) if empty, otherwise leave as-is
-                # TODO: Implement user lookup by display name
-                update_payload['fields']['assignee'] = {"accountId": changes['assignee']}
+                # Handle currentUser() specially
+                if changes['assignee'] == 'currentUser()':
+                    update_payload['fields']['assignee'] = {"accountId": None}  # Current user
+                else:
+                    # accountId already resolved by _resolve_all_user_fields()
+                    update_payload['fields']['assignee'] = {"accountId": changes['assignee']}
             else:
                 update_payload['fields']['assignee'] = None
+
+        if 'reporter' in changes:
+            if changes['reporter']:
+                # Handle currentUser() specially
+                if changes['reporter'] == 'currentUser()':
+                    update_payload['fields']['reporter'] = {"accountId": None}  # Current user
+                else:
+                    # accountId already resolved by _resolve_all_user_fields()
+                    update_payload['fields']['reporter'] = {"accountId": changes['reporter']}
+            else:
+                # Reporter field cannot be null in Jira
+                return (False, "Reporter cannot be empty")
 
         if 'priority' in changes and changes['priority']:
             update_payload['fields']['priority'] = {"name": changes['priority']}

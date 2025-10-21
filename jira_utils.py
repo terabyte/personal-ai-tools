@@ -597,41 +597,66 @@ class JiraUtils:
             return link_types
         return []
 
-    def get_users(self, query: str = None, max_results: int = 50,
-                  force_refresh: bool = False) -> List[dict]:
+    def fetch_all_users(self, max_total: int = 10000) -> List[dict]:
         """
-        Search users with optional caching of full user list.
+        Fetch all users with pagination, up to max_total.
 
         Args:
-            query: Search query for user search (optional)
-            max_results: Maximum number of results to return
-            force_refresh: If True, bypass cache and fetch from API
+            max_total: Maximum number of users to fetch (default 10000)
 
         Returns:
             List of user dicts with accountId, displayName, emailAddress
         """
-        # Check if cache bypass is globally enabled
-        no_cache = os.environ.get('JIRA_NO_CACHE', 'false').lower() == 'true'
-        force_refresh = force_refresh or no_cache
+        all_users = []
+        start_at = 0
+        page_size = 1000  # Jira API max per request
 
-        # If no query, try cache for common list
-        if not query:
-            cached = self.cache.get('users', key='all', force_refresh=force_refresh)
-            if cached:
-                return cached[:max_results]
+        while len(all_users) < max_total:
+            endpoint = f'/user/search?query=&maxResults={page_size}&startAt={start_at}'
+            response = self.call_jira_api(endpoint)
 
-        # Fetch from API
-        endpoint = f'/user/search?maxResults={max_results}'
-        if query:
-            endpoint += f'&query={query}'
+            if not response or not isinstance(response, list):
+                break
 
+            if len(response) == 0:  # No more users
+                break
+
+            all_users.extend(response)
+            start_at += len(response)
+
+            if len(response) < page_size:  # Last page (incomplete page)
+                break
+
+        return all_users[:max_total]
+
+    def get_users(self, query: str = None, force_refresh: bool = False) -> List[dict]:
+        """
+        Get users via Jira API search.
+
+        Args:
+            query: Search query for users (required for meaningful results)
+            force_refresh: Ignored (kept for API compatibility)
+
+        Returns:
+            List of user dicts with accountId, displayName, emailAddress
+
+        Note: Empty queries return external users without emails. Always provide
+        a search query (e.g., first few letters of name) for best results.
+        """
+        if not query or len(query.strip()) < 2:
+            # Don't search with empty/short queries - returns external users
+            return []
+
+        query_param = query.strip()
+
+        # Search with actual query (returns real users with email addresses)
+        endpoint = f'/user/search?query={query_param}&maxResults=1000'
         response = self.call_jira_api(endpoint)
-        if response and isinstance(response, list):
-            # Cache full list if no query
-            if not query and not no_cache:
-                self.cache.set('users', response, ttl=3600, key='all')  # 1 hour
-            return response
-        return []
+
+        if not response or not isinstance(response, list):
+            return []
+
+        return response
 
     def get_issue_types(self, project_key: str, force_refresh: bool = False) -> List[dict]:
         """
