@@ -2517,6 +2517,7 @@ class JiraTUI:
             text = ""
             cursor_pos = 0
             max_width = menu_width - input_x - 3
+            typing_mode = False  # Track if user has started typing
 
             curses.curs_set(1)
 
@@ -2529,14 +2530,14 @@ class JiraTUI:
                     overlay.addstr(1, 2, error_message[:menu_width - 4], curses.color_pair(4))  # Red color
                     overlay.addstr(2, 2, "Enter issue key or JQL query", curses.A_DIM)
                     overlay.addstr(4, 2, "Query: ")
-                    if has_current_tickets:
-                        overlay.addstr(menu_height - 2, 2, "T: select from current tickets")
+                    if has_current_tickets and not typing_mode:
+                        overlay.addstr(menu_height - 2, 2, "T: select from current / other key: type query")
                     overlay.addstr(menu_height - 1, 2, "ESC to go back  Empty to cancel")
                 else:
                     overlay.addstr(1, 2, "Enter issue key or JQL query", curses.A_DIM)
                     overlay.addstr(3, 2, "Query: ")
-                    if has_current_tickets:
-                        overlay.addstr(menu_height - 2, 2, "T: select from current tickets")
+                    if has_current_tickets and not typing_mode:
+                        overlay.addstr(menu_height - 2, 2, "T: select from current / other key: type query")
                     overlay.addstr(menu_height - 1, 2, "ESC to go back  Empty to cancel")
 
                 # Display text
@@ -2550,10 +2551,6 @@ class JiraTUI:
                 if ch == 27:  # ESC
                     curses.curs_set(0)
                     return None  # None means "go back"
-                elif ch == ord('t') or ch == ord('T'):  # Select from current tickets
-                    if has_current_tickets:
-                        curses.curs_set(0)
-                        return "__SELECT_FROM_CURRENT__"
                 elif ch == ord('\n'):  # Enter
                     curses.curs_set(0)
                     # Return empty string "" for empty query (means "cancel completely")
@@ -2572,9 +2569,17 @@ class JiraTUI:
                 elif ch == curses.KEY_END or ch == 5:  # End or Ctrl-E
                     cursor_pos = len(text)
                 elif 32 <= ch <= 126:  # Printable ASCII
-                    if len(text) < max_width:
-                        text = text[:cursor_pos] + chr(ch) + text[cursor_pos:]
-                        cursor_pos += 1
+                    # Special handling for first keypress
+                    if not typing_mode and has_current_tickets and (ch == ord('t') or ch == ord('T')):
+                        # First key is 'T' - select from current tickets
+                        curses.curs_set(0)
+                        return "__SELECT_FROM_CURRENT__"
+                    else:
+                        # Enter typing mode and add character
+                        typing_mode = True
+                        if len(text) < max_width:
+                            text = text[:cursor_pos] + chr(ch) + text[cursor_pos:]
+                            cursor_pos += 1
 
         except curses.error:
             curses.curs_set(0)
