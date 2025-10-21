@@ -1369,7 +1369,9 @@ class JiraTUI:
             f.write(f"# Ticket: {ticket_key}\n")
             f.write(f"# Summary: {fields.get('summary', '')}\n")
             f.write(f"# Status: {(fields.get('status') or {}).get('name', '')}\n")
-            f.write(f"# Assignee: {(fields.get('assignee') or {}).get('displayName', 'Unassigned')}\n")
+            assignee = fields.get('assignee')
+            assignee_display = self.viewer.utils.format_user(assignee) if assignee else 'Unassigned'
+            f.write(f"# Assignee: {assignee_display}\n")
             f.write(f"#\n")
             f.write(f"# Enter your comment below (lines starting with # will be ignored):\n")
             f.write(f"#\n")
@@ -1554,7 +1556,9 @@ class JiraTUI:
             f.write(f"# Ticket: {ticket_key}\n")
             f.write(f"# Summary: {fields.get('summary', '')}\n")
             f.write(f"# Status: {(fields.get('status') or {}).get('name', '')}\n")
-            f.write(f"# Assignee: {(fields.get('assignee') or {}).get('displayName', 'Unassigned')}\n")
+            assignee = fields.get('assignee')
+            assignee_display = self.viewer.utils.format_user(assignee) if assignee else 'Unassigned'
+            f.write(f"# Assignee: {assignee_display}\n")
             f.write(f"#\n")
             f.write(f"# Enter your comment below (lines starting with # will be ignored):\n")
             f.write(f"#\n")

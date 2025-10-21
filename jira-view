@@ -392,11 +392,11 @@ class JiraViewer:
         lines.append(("", f" Type: {issue_type}"[:max_width - 2]))
 
         assignee = fields.get('assignee')
-        assignee_name = self.utils.get_assignee_name(assignee) if assignee else 'Unassigned'
+        assignee_name = self.utils.format_user(assignee) if assignee else 'Unassigned'
         lines.append(("", f" Assignee: {assignee_name}"[:max_width - 2]))
 
         reporter = fields.get('reporter')
-        reporter_name = reporter.get('displayName', 'Unknown') if reporter else 'Unknown'
+        reporter_name = self.utils.format_user(reporter) if reporter else 'Unknown'
         lines.append(("", f" Reporter: {reporter_name}"[:max_width - 2]))
 
         priority = fields.get('priority', {}).get('name', 'None')
