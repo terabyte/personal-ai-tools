@@ -469,7 +469,7 @@ class JiraTUI:
             elif key == ord('l') or key == ord('L'):  # Issue links
                 if tickets and selected_idx < len(tickets):
                     current_key = tickets[selected_idx].get('key')
-                    self._handle_issue_links(stdscr, current_key, height, width)
+                    self._handle_issue_links(stdscr, current_key, tickets, height, width)
                     # Refresh current ticket after link change (both cache and list)
                     full_ticket = self.viewer.fetch_ticket_details(current_key)
                     if full_ticket:
@@ -2233,7 +2233,20 @@ class JiraTUI:
         except curses.error:
             pass
 
-    def _handle_issue_links(self, stdscr, ticket_key: str, height: int, width: int):
+    def _get_status_color(self, status_letter: str) -> int:
+        """Get curses color pair for a status letter."""
+        if status_letter in ['C', 'V', 'Z', 'Y', 'M']:
+            return curses.color_pair(1)  # Green for done
+        elif status_letter in ['A', 'B', 'S', 'W']:
+            return curses.color_pair(3)  # Blue for backlog
+        elif status_letter in ['P', 'R', 'Q', 'T']:
+            return curses.color_pair(2)  # Yellow for active
+        elif status_letter in ['D', 'X', '_']:
+            return curses.color_pair(4)  # Red for blocked
+        else:
+            return curses.A_NORMAL
+
+    def _handle_issue_links(self, stdscr, ticket_key: str, tickets: list, height: int, width: int):
         """Handle managing issue links (L key)."""
         # Get ticket details to check for existing links
         with self.loading_lock:
@@ -2254,7 +2267,7 @@ class JiraTUI:
         action = self._show_link_action_menu(stdscr, height, width, has_links=len(issue_links) > 0)
 
         if action == 'add':
-            self._add_issue_link(stdscr, ticket_key, height, width)
+            self._add_issue_link(stdscr, ticket_key, tickets, height, width)
         elif action == 'remove':
             self._remove_issue_link(stdscr, ticket_key, issue_links, height, width)
 
@@ -2481,9 +2494,9 @@ class JiraTUI:
         except curses.error:
             return None
 
-    def _prompt_for_jql_search(self, stdscr, height: int, width: int, error_message: Optional[str] = None) -> Optional[str]:
-        """Prompt user for JQL query. Returns JQL string or None."""
-        menu_height = 7 if error_message else 6
+    def _prompt_for_jql_search(self, stdscr, height: int, width: int, has_current_tickets: bool = False, error_message: Optional[str] = None) -> Optional[str]:
+        """Prompt user for JQL query. Returns JQL string, None, empty string, or '__SELECT_FROM_CURRENT__'."""
+        menu_height = 8 if error_message else 7
         menu_width = min(70, width - 4)
         start_y = (height - menu_height) // 2
         start_x = (width - menu_width) // 2
@@ -2516,10 +2529,14 @@ class JiraTUI:
                     overlay.addstr(1, 2, error_message[:menu_width - 4], curses.color_pair(4))  # Red color
                     overlay.addstr(2, 2, "Enter issue key or JQL query", curses.A_DIM)
                     overlay.addstr(4, 2, "Query: ")
+                    if has_current_tickets:
+                        overlay.addstr(menu_height - 2, 2, "T: select from current tickets")
                     overlay.addstr(menu_height - 1, 2, "ESC to go back  Empty to cancel")
                 else:
                     overlay.addstr(1, 2, "Enter issue key or JQL query", curses.A_DIM)
                     overlay.addstr(3, 2, "Query: ")
+                    if has_current_tickets:
+                        overlay.addstr(menu_height - 2, 2, "T: select from current tickets")
                     overlay.addstr(menu_height - 1, 2, "ESC to go back  Empty to cancel")
 
                 # Display text
@@ -2533,6 +2550,10 @@ class JiraTUI:
                 if ch == 27:  # ESC
                     curses.curs_set(0)
                     return None  # None means "go back"
+                elif ch == ord('t') or ch == ord('T'):  # Select from current tickets
+                    if has_current_tickets:
+                        curses.curs_set(0)
+                        return "__SELECT_FROM_CURRENT__"
                 elif ch == ord('\n'):  # Enter
                     curses.curs_set(0)
                     # Return empty string "" for empty query (means "cancel completely")
@@ -2632,8 +2653,20 @@ class JiraTUI:
                     attr = curses.A_REVERSE if idx == cursor_pos else curses.A_NORMAL
                     key = issue.get('key', 'UNKNOWN')
                     summary = issue.get('fields', {}).get('summary', 'No summary')
-                    display = f" {key}: {summary}"
-                    overlay.addstr(idx - start_idx + 2, 2, display[:menu_width - 4], attr)
+                    status = issue.get('fields', {}).get('status', {}).get('name', 'Unknown')
+                    status_letter = self.viewer.utils.get_status_letter(status)
+                    status_color = self._get_status_color(status_letter)
+
+                    # Draw status with color, then key and summary
+                    y_pos = idx - start_idx + 2
+                    x_pos = 2
+                    try:
+                        overlay.addstr(y_pos, x_pos, f"[{status_letter}] ", status_color | attr)
+                        x_pos += len(f"[{status_letter}] ")
+                        remaining = f"{key}: {summary}"
+                        overlay.addstr(y_pos, x_pos, remaining[:menu_width - x_pos - 2], attr)
+                    except curses.error:
+                        pass
 
                 # Footer
                 overlay.addstr(menu_height - 1, 2, "Enter: select  /: filter  q: cancel")
@@ -2740,7 +2773,98 @@ class JiraTUI:
                 pass
             return None
 
-    def _add_issue_link(self, stdscr, ticket_key: str, height: int, width: int):
+    def _prompt_for_current_ticket_selection(self, stdscr, tickets: list, height: int, width: int) -> Optional[str]:
+        """Show current tickets for selection. Returns issue key or None."""
+        if not tickets:
+            return None
+
+        menu_height = min(len(tickets) + 6, height - 4)
+        menu_width = min(80, width - 4)
+        start_y = (height - menu_height) // 2
+        start_x = (width - menu_width) // 2
+
+        cursor_pos = 0
+        search_filter = ""
+
+        try:
+            overlay = curses.newwin(menu_height, menu_width, start_y, start_x)
+
+            while True:
+                # Filter tickets by search
+                filtered_tickets = tickets
+                if search_filter:
+                    search_lower = search_filter.lower()
+                    filtered_tickets = [
+                        ticket for ticket in tickets
+                        if search_lower in ticket.get('key', '').lower() or
+                           search_lower in ticket.get('fields', {}).get('summary', '').lower()
+                    ]
+
+                cursor_pos = min(cursor_pos, len(filtered_tickets) - 1) if filtered_tickets else 0
+
+                overlay.clear()
+                overlay.box()
+                overlay.addstr(0, 2, f" Select from Current Tickets ({len(filtered_tickets)}) ", curses.A_BOLD)
+
+                # Show search filter if active
+                if search_filter:
+                    overlay.addstr(1, 2, f"Filter: {search_filter}", curses.A_DIM)
+
+                # List filtered tickets
+                visible_height = menu_height - 4
+                start_idx = max(0, cursor_pos - visible_height + 1) if cursor_pos >= visible_height else 0
+
+                for idx in range(start_idx, min(start_idx + visible_height, len(filtered_tickets))):
+                    ticket = filtered_tickets[idx]
+                    attr = curses.A_REVERSE if idx == cursor_pos else curses.A_NORMAL
+                    key = ticket.get('key', 'UNKNOWN')
+                    summary = ticket.get('fields', {}).get('summary', 'No summary')
+                    status = ticket.get('fields', {}).get('status', {}).get('name', 'Unknown')
+                    status_letter = self.viewer.utils.get_status_letter(status)
+                    status_color = self._get_status_color(status_letter)
+
+                    # Draw status with color, then key and summary
+                    y_pos = idx - start_idx + 2
+                    x_pos = 2
+                    try:
+                        overlay.addstr(y_pos, x_pos, f"[{status_letter}] ", status_color | attr)
+                        x_pos += len(f"[{status_letter}] ")
+                        remaining = f"{key}: {summary}"
+                        overlay.addstr(y_pos, x_pos, remaining[:menu_width - x_pos - 2], attr)
+                    except curses.error:
+                        pass
+
+                # Footer
+                overlay.addstr(menu_height - 1, 2, "Enter: select  /: filter  q: cancel")
+                overlay.refresh()
+
+                ch = overlay.getch()
+
+                if ch == ord('q') or ch == 27:  # q or ESC
+                    return None
+                elif ch in [curses.KEY_DOWN, ord('j')]:
+                    cursor_pos = min(cursor_pos + 1, len(filtered_tickets) - 1)
+                elif ch in [curses.KEY_UP, ord('k')]:
+                    cursor_pos = max(cursor_pos - 1, 0)
+                elif ch == ord('/'):  # Start filtering
+                    curses.echo()
+                    curses.curs_set(1)
+                    overlay.addstr(menu_height - 2, 2, "Filter: ")
+                    overlay.clrtoeol()
+                    overlay.refresh()
+                    filter_input = overlay.getstr(menu_height - 2, 10, menu_width - 14).decode('utf-8', errors='ignore')
+                    curses.noecho()
+                    curses.curs_set(0)
+                    search_filter = filter_input.strip()
+                    cursor_pos = 0
+                elif ch == ord('\n'):  # Enter to select
+                    if filtered_tickets:
+                        return filtered_tickets[cursor_pos].get('key')
+
+        except curses.error:
+            return None
+
+    def _add_issue_link(self, stdscr, ticket_key: str, tickets: list, height: int, width: int):
         """Complete flow to add an issue link."""
         while True:  # Outer loop - allows going back to link type selection
             # Step 1: Select link type
@@ -2756,22 +2880,30 @@ class JiraTUI:
             # Steps 3-4: Search for target issue (allow retrying on failure)
             target_key = None
             error_message = None
+            has_current_tickets = tickets and len(tickets) > 0
             while not target_key:
-                # Step 3: Prompt for JQL query
-                jql = self._prompt_for_jql_search(stdscr, height, width, error_message)
+                # Step 3: Prompt for JQL query or select from current
+                jql = self._prompt_for_jql_search(stdscr, height, width, has_current_tickets, error_message)
                 if jql is None:
                     # None means ESC - go back to link type
                     break  # Break out of JQL loop to go back to link type
                 elif jql == "":
                     # Empty string means cancel completely
                     return
-
-                # Step 4: Execute search and select issue
-                target_key = self._prompt_for_issue_selection(stdscr, jql, height, width)
-                if not target_key:
-                    # Search failed or no results - set error and loop to retry
-                    error_message = "Search failed or no results. Try another query or press ESC to go back."
-                    continue
+                elif jql == "__SELECT_FROM_CURRENT__":
+                    # User wants to select from current tickets
+                    target_key = self._prompt_for_current_ticket_selection(stdscr, tickets, height, width)
+                    if not target_key:
+                        # User canceled from ticket selection
+                        error_message = None  # Clear error for retry
+                        continue
+                else:
+                    # Step 4: Execute search and select issue
+                    target_key = self._prompt_for_issue_selection(stdscr, jql, height, width)
+                    if not target_key:
+                        # Search failed or no results - set error and loop to retry
+                        error_message = "Search failed or no results. Try another query or press ESC to go back."
+                        continue
 
             # If we broke out of the JQL loop without a target_key, go back to link type
             if not target_key:
@@ -3210,16 +3342,7 @@ class JiraTUI:
                 base_attr |= curses.A_DIM
 
             # Determine status color (matching dashboard style)
-            if status_letter in ['C', 'V', 'Z', 'Y', 'M']:
-                status_color = curses.color_pair(1)  # Green for done
-            elif status_letter in ['A', 'B', 'S', 'W']:
-                status_color = curses.color_pair(3)  # Blue for backlog
-            elif status_letter in ['P', 'R', 'Q', 'T']:
-                status_color = curses.color_pair(2)  # Yellow for active
-            elif status_letter in ['D', 'X', '_']:
-                status_color = curses.color_pair(4)  # Red for blocked
-            else:
-                status_color = curses.A_NORMAL
+            status_color = self._get_status_color(status_letter)
 
             # Draw line in colored segments
             try:
@@ -3430,16 +3553,7 @@ class JiraTUI:
             elif tag.startswith("STATUS_"):
                 # Map status letter to color (matching dashboard style)
                 status_letter = tag.split("_")[1]
-                if status_letter in ['C', 'V', 'Z', 'Y', 'M']:
-                    attr = curses.color_pair(1)  # Green for done
-                elif status_letter in ['A', 'B', 'S', 'W']:
-                    attr = curses.color_pair(3)  # Blue for backlog
-                elif status_letter in ['P', 'R', 'Q', 'T']:
-                    attr = curses.color_pair(2)  # Yellow for active
-                elif status_letter in ['D', 'X', '_']:
-                    attr = curses.color_pair(4)  # Red for blocked
-                else:
-                    attr = curses.A_NORMAL
+                attr = self._get_status_color(status_letter)
             elif tag.startswith("PRIORITY_"):
                 # Map priority to color
                 priority = tag.split("_", 1)[1]

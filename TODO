@@ -1,9 +1,9 @@
 # jira-view
+- hotkey to copy URL of current issue
+- Ability to set assignee / reporter to None, etc.
 - If a change causes an issue to no longer be in the current query, it can cause a crash right now (index out of bounds). Ideally, if a change causes issues to be added they just show up and if they are removed maybe it still shows them but greyed out so you know they will disapear on next refresh. After a manually requested refresh, they can go away and if the selected issue disapears go back to the next issue in the list that is still present.
 - Press 'C' to convert current query to a list of tickets and if current query is just a list of tickets, creating new tickets adds them to the list. Also, you can add/remove tickets easily. Maybe it can do this with any query by adding "or ticket in (...)" to the end?
-- Ability to add/change issue links - possibly with a UX that lets you search for issues or autocompletes?
-- Ability to set assignee / reporter to None, etc.
-- hotkey to copy URL of current issue
+# other
 - Handle story points forever
   - Create a field "total effort"
   - Write a script that populates this field if it is not already set
