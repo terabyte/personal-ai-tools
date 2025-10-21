@@ -5,4 +5,11 @@
 - Handle story points forever
   - Create a field "total effort"
   - Write a script that populates this field if it is not already set
-
+# backlog-refinement tool
+- Make a TUI similar to jira-view but optimized for backlog triage.
+  - Enter story points easily
+  - Transition to other states
+  - Show sorted backlog
+  - change order easily, send to top, send to bottom, etc.
+- Maybe should actually just be a mode for the existing TUI to change keybindings? View should look similar
+  - If orderby can sort correctly, then all we need to do is give the correct query and optimize keybindings/workflow for triage tasks
