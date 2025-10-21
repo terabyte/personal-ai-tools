@@ -27,11 +27,14 @@ class JiraViewer:
         self.utils = JiraUtils(self.script_dir)
 
     def is_ticket_key(self, arg: str) -> bool:
-        """Check if argument looks like a ticket key (PROJECT-123)."""
-        return bool(re.match(r'^[A-Z][A-Z0-9]+-\d+$', arg))
+        """Check if argument looks like a ticket key (PROJECT-123), case-insensitive."""
+        return bool(re.match(r'^[A-Za-z][A-Za-z0-9]+-\d+$', arg))
 
     def fetch_ticket_details(self, ticket_key: str) -> Optional[dict]:
         """Fetch full ticket details including comments and history."""
+        # Normalize ticket key to uppercase (case-insensitive)
+        ticket_key = ticket_key.strip().upper()
+
         fields = [
             'key', 'summary', 'description', 'status', 'priority', 'assignee',
             'reporter', 'created', 'updated', 'resolutiondate', 'duedate',

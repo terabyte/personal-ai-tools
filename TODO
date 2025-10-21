@@ -4,3 +4,7 @@
 - Ability to add/change issue links - possibly with a UX that lets you search for issues or autocompletes?
 - Ability to set assignee / reporter to None, etc.
 - hotkey to copy URL of current issue
+- Handle story points forever
+  - Create a field "total effort"
+  - Write a script that populates this field if it is not already set
+

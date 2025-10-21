@@ -13,6 +13,8 @@ import textwrap
 import threading
 import signal
 import atexit
+import re
+from urllib.parse import quote
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Optional, Tuple
 from pathlib import Path
@@ -47,6 +49,28 @@ class JiraTUI:
         self._original_sigint_handler = None  # Store original signal handler
         self._shutdown_flag = False  # Flag to signal background threads to stop
         self.stale_tickets = set()  # Track tickets that may no longer match the query
+
+    @staticmethod
+    def normalize_jql_input(input_str: str) -> str:
+        """
+        Normalize JQL input - convert plain issue keys to JQL and upcase them.
+
+        Args:
+            input_str: User input (issue key or JQL query)
+
+        Returns:
+            Normalized JQL query string
+        """
+        stripped = input_str.strip()
+
+        # Check if input looks like a plain issue key (case-insensitive)
+        issue_key_pattern = r'^[A-Za-z][A-Za-z0-9]+-\d+$'
+        if re.match(issue_key_pattern, stripped):
+            # Convert to uppercase and wrap in key= JQL
+            return f'key={stripped.upper()}'
+
+        # Otherwise return as-is (already JQL)
+        return stripped
 
     def _cleanup_curses(self):
         """Ensure curses is properly cleaned up."""
@@ -430,6 +454,23 @@ class JiraTUI:
                     current_key = tickets[selected_idx].get('key')
                     self._handle_comment(stdscr, current_key, height, width)
                     # Refresh current ticket after comment (both cache and list)
+                    full_ticket = self.viewer.fetch_ticket_details(current_key)
+                    if full_ticket:
+                        with self.loading_lock:
+                            self.ticket_cache[current_key] = full_ticket
+                        # Update the tickets list entry so left pane shows updated data
+                        tickets[selected_idx] = {'key': full_ticket.get('key'), 'fields': full_ticket.get('fields', {})}
+                        if tickets is not all_tickets:
+                            # Also update all_tickets if we're in filtered view
+                            for i, t in enumerate(all_tickets):
+                                if t.get('key') == current_key:
+                                    all_tickets[i] = tickets[selected_idx]
+                                    break
+            elif key == ord('l') or key == ord('L'):  # Issue links
+                if tickets and selected_idx < len(tickets):
+                    current_key = tickets[selected_idx].get('key')
+                    self._handle_issue_links(stdscr, current_key, height, width)
+                    # Refresh current ticket after link change (both cache and list)
                     full_ticket = self.viewer.fetch_ticket_details(current_key)
                     if full_ticket:
                         with self.loading_lock:
@@ -2192,6 +2233,810 @@ class JiraTUI:
         except curses.error:
             pass
 
+    def _handle_issue_links(self, stdscr, ticket_key: str, height: int, width: int):
+        """Handle managing issue links (L key)."""
+        # Get ticket details to check for existing links
+        with self.loading_lock:
+            ticket = self.ticket_cache.get(ticket_key)
+
+        if not ticket:
+            ticket = self.viewer.fetch_ticket_details(ticket_key)
+
+        if not ticket:
+            self._show_message(stdscr, "Failed to load ticket", height, width)
+            return
+
+        # Check for existing issue links
+        fields = ticket.get('fields', {})
+        issue_links = fields.get('issuelinks', [])
+
+        # Show action menu (conditionally shows Remove if links exist)
+        action = self._show_link_action_menu(stdscr, height, width, has_links=len(issue_links) > 0)
+
+        if action == 'add':
+            self._add_issue_link(stdscr, ticket_key, height, width)
+        elif action == 'remove':
+            self._remove_issue_link(stdscr, ticket_key, issue_links, height, width)
+
+    def _show_link_action_menu(self, stdscr, height: int, width: int, has_links: bool) -> Optional[str]:
+        """Show conditional menu for link actions. Returns 'add', 'remove', or None."""
+        options = [('add', 'Add Link')]
+        if has_links:
+            options.append(('remove', 'Remove Link'))
+
+        menu_height = len(options) + 4
+        menu_width = min(40, width - 4)
+        start_y = (height - menu_height) // 2
+        start_x = (width - menu_width) // 2
+
+        cursor_pos = 0
+
+        try:
+            overlay = curses.newwin(menu_height, menu_width, start_y, start_x)
+
+            while True:
+                overlay.clear()
+                overlay.box()
+                overlay.addstr(0, 2, " Issue Links ", curses.A_BOLD)
+
+                for idx, (action, label) in enumerate(options):
+                    attr = curses.A_REVERSE if idx == cursor_pos else curses.A_NORMAL
+                    overlay.addstr(idx + 2, 2, f" {idx + 1}. {label}", attr)
+
+                overlay.addstr(menu_height - 1, 2, "Enter: select  q: cancel")
+                overlay.refresh()
+
+                ch = overlay.getch()
+
+                if ch == ord('q') or ch == 27:  # q or ESC
+                    return None
+                elif ch in [curses.KEY_DOWN, ord('j')]:
+                    cursor_pos = min(cursor_pos + 1, len(options) - 1)
+                elif ch in [curses.KEY_UP, ord('k')]:
+                    cursor_pos = max(cursor_pos - 1, 0)
+                elif ch == ord('\n'):  # Enter
+                    action, _ = options[cursor_pos]
+                    return action
+
+        except curses.error:
+            return None
+
+    def _prompt_for_link_type(self, stdscr, height: int, width: int) -> Optional[dict]:
+        """Prompt user to select link type. Returns link type dict or None. Supports 'R' to refresh cache."""
+        cache = self.viewer.utils.cache
+        link_types = self.viewer.utils.get_link_types()
+
+        if not link_types:
+            self._show_message(stdscr, "✗ Failed to load link types", height, width)
+            return None
+
+        menu_height = min(len(link_types) + 6, height - 4)
+        menu_width = min(60, width - 4)
+        start_y = (height - menu_height) // 2
+        start_x = (width - menu_width) // 2
+
+        cursor_pos = 0
+        search_filter = ""
+        type_buffer = ""  # Buffer for type-to-jump
+
+        try:
+            overlay = curses.newwin(menu_height, menu_width, start_y, start_x)
+
+            while True:
+                # Filter link types by search
+                filtered_types = link_types
+                if search_filter:
+                    search_lower = search_filter.lower()
+                    filtered_types = [
+                        lt for lt in link_types
+                        if search_lower in lt.get('name', '').lower() or
+                           search_lower in lt.get('inward', '').lower() or
+                           search_lower in lt.get('outward', '').lower()
+                    ]
+
+                cursor_pos = min(cursor_pos, len(filtered_types) - 1) if filtered_types else 0
+
+                overlay.clear()
+                overlay.box()
+
+                # Title with cache age
+                cache_age = cache.get_age('link_types')
+                title = f" Select Link Type (cached {cache_age}) "
+                overlay.addstr(0, 2, title, curses.A_BOLD)
+
+                # Show search filter or type buffer if active
+                if search_filter:
+                    overlay.addstr(1, 2, f"Filter: {search_filter}", curses.A_DIM)
+                elif type_buffer:
+                    overlay.addstr(1, 2, f"Jump: {type_buffer}", curses.A_DIM)
+
+                # List filtered link types
+                visible_height = menu_height - 5
+                start_idx = max(0, cursor_pos - visible_height + 1) if cursor_pos >= visible_height else 0
+
+                for idx in range(start_idx, min(start_idx + visible_height, len(filtered_types))):
+                    lt = filtered_types[idx]
+                    attr = curses.A_REVERSE if idx == cursor_pos else curses.A_NORMAL
+                    name = lt.get('name', 'Unknown')
+                    inward = lt.get('inward', '')
+                    outward = lt.get('outward', '')
+                    display = f" {name}: {inward} / {outward}"
+                    overlay.addstr(idx - start_idx + 2, 2, display[:menu_width - 4], attr)
+
+                # Footer
+                overlay.addstr(menu_height - 2, 2, "R: refresh cache")
+                overlay.addstr(menu_height - 1, 2, "Enter: select  /: filter  q: cancel")
+                overlay.refresh()
+
+                ch = overlay.getch()
+
+                if ch == ord('q') or ch == 27:  # q or ESC
+                    return None
+                elif ch in [curses.KEY_DOWN, ord('j')]:
+                    cursor_pos = min(cursor_pos + 1, len(filtered_types) - 1)
+                    type_buffer = ""  # Clear type buffer on navigation
+                elif ch in [curses.KEY_UP, ord('k')]:
+                    cursor_pos = max(cursor_pos - 1, 0)
+                    type_buffer = ""  # Clear type buffer on navigation
+                elif ch == ord('R'):  # Refresh cache
+                    overlay.clear()
+                    overlay.box()
+                    overlay.addstr(menu_height // 2, 2, "Refreshing link types...")
+                    overlay.refresh()
+                    link_types = self.viewer.utils.get_link_types(force_refresh=True)
+                    if not link_types:
+                        self._show_message(stdscr, "✗ Failed to refresh link types", height, width)
+                        return None
+                    # Reset filter and cursor
+                    search_filter = ""
+                    type_buffer = ""
+                    cursor_pos = 0
+                elif ch == ord('/'):  # Start filtering
+                    curses.echo()
+                    curses.curs_set(1)
+                    overlay.addstr(menu_height - 3, 2, "Filter: ")
+                    overlay.clrtoeol()
+                    overlay.refresh()
+                    filter_input = overlay.getstr(menu_height - 3, 10, menu_width - 14).decode('utf-8', errors='ignore')
+                    curses.noecho()
+                    curses.curs_set(0)
+                    search_filter = filter_input.strip()
+                    type_buffer = ""
+                    cursor_pos = 0
+                elif ch == ord('\n'):  # Enter to select
+                    if filtered_types:
+                        return filtered_types[cursor_pos]
+                elif ch == curses.KEY_BACKSPACE or ch == 127:  # Backspace
+                    if type_buffer:
+                        type_buffer = type_buffer[:-1]
+                        # Jump to match with shortened buffer
+                        if type_buffer and filtered_types:
+                            search_lower = type_buffer.lower()
+                            for idx, lt in enumerate(filtered_types):
+                                name = lt.get('name', '').lower()
+                                if name.startswith(search_lower):
+                                    cursor_pos = idx
+                                    break
+                elif 32 <= ch <= 126:  # Printable ASCII characters
+                    # Add to type buffer and jump to match
+                    char = chr(ch)
+                    type_buffer += char
+
+                    # Find first match (case insensitive)
+                    search_lower = type_buffer.lower()
+                    for idx, lt in enumerate(filtered_types):
+                        name = lt.get('name', '').lower()
+                        if name.startswith(search_lower):
+                            cursor_pos = idx
+                            break
+
+        except curses.error:
+            return None
+
+    def _prompt_for_link_direction(self, stdscr, link_type: dict, height: int, width: int) -> Optional[str]:
+        """Prompt user to select link direction. Returns 'inward' or 'outward' or None."""
+        inward = link_type.get('inward', 'Inward')
+        outward = link_type.get('outward', 'Outward')
+        name = link_type.get('name', 'Unknown')
+
+        options = [
+            ('inward', inward),
+            ('outward', outward)
+        ]
+
+        menu_height = 7
+        menu_width = min(60, width - 4)
+        start_y = (height - menu_height) // 2
+        start_x = (width - menu_width) // 2
+
+        cursor_pos = 0
+
+        try:
+            overlay = curses.newwin(menu_height, menu_width, start_y, start_x)
+
+            while True:
+                overlay.clear()
+                overlay.box()
+                overlay.addstr(0, 2, f" Link Direction ({name}) ", curses.A_BOLD)
+
+                for idx, (direction, label) in enumerate(options):
+                    attr = curses.A_REVERSE if idx == cursor_pos else curses.A_NORMAL
+                    overlay.addstr(idx + 2, 2, f" {idx + 1}. {label}", attr)
+
+                overlay.addstr(menu_height - 1, 2, "Enter: select  q: cancel")
+                overlay.refresh()
+
+                ch = overlay.getch()
+
+                if ch == ord('q') or ch == 27:  # q or ESC
+                    return None
+                elif ch in [curses.KEY_DOWN, ord('j')]:
+                    cursor_pos = min(cursor_pos + 1, len(options) - 1)
+                elif ch in [curses.KEY_UP, ord('k')]:
+                    cursor_pos = max(cursor_pos - 1, 0)
+                elif ch == ord('\n'):  # Enter
+                    direction, _ = options[cursor_pos]
+                    return direction
+
+        except curses.error:
+            return None
+
+    def _prompt_for_jql_search(self, stdscr, height: int, width: int, error_message: Optional[str] = None) -> Optional[str]:
+        """Prompt user for JQL query. Returns JQL string or None."""
+        menu_height = 7 if error_message else 6
+        menu_width = min(70, width - 4)
+        start_y = (height - menu_height) // 2
+        start_x = (width - menu_width) // 2
+
+        try:
+            overlay = curses.newwin(menu_height, menu_width, start_y, start_x)
+            overlay.keypad(True)
+
+            # Show error message if provided
+            if error_message:
+                input_y = 4
+                input_x = 10
+            else:
+                input_y = 3
+                input_x = 10
+
+            # Input buffer
+            text = ""
+            cursor_pos = 0
+            max_width = menu_width - input_x - 3
+
+            curses.curs_set(1)
+
+            while True:
+                overlay.clear()
+                overlay.box()
+                overlay.addstr(0, 2, " Search for Issue ", curses.A_BOLD)
+
+                if error_message:
+                    overlay.addstr(1, 2, error_message[:menu_width - 4], curses.color_pair(4))  # Red color
+                    overlay.addstr(2, 2, "Enter issue key or JQL query", curses.A_DIM)
+                    overlay.addstr(4, 2, "Query: ")
+                    overlay.addstr(menu_height - 1, 2, "ESC to go back  Empty to cancel")
+                else:
+                    overlay.addstr(1, 2, "Enter issue key or JQL query", curses.A_DIM)
+                    overlay.addstr(3, 2, "Query: ")
+                    overlay.addstr(menu_height - 1, 2, "ESC to go back  Empty to cancel")
+
+                # Display text
+                display_text = text[:max_width]
+                overlay.addstr(input_y, input_x, display_text)
+                overlay.move(input_y, input_x + min(cursor_pos, max_width))
+                overlay.refresh()
+
+                ch = overlay.getch()
+
+                if ch == 27:  # ESC
+                    curses.curs_set(0)
+                    return None  # None means "go back"
+                elif ch == ord('\n'):  # Enter
+                    curses.curs_set(0)
+                    # Return empty string "" for empty query (means "cancel completely")
+                    # Return the query string for non-empty queries
+                    return text.strip() if text.strip() else ""
+                elif ch in [curses.KEY_BACKSPACE, 127, 8]:  # Backspace
+                    if cursor_pos > 0:
+                        text = text[:cursor_pos - 1] + text[cursor_pos:]
+                        cursor_pos -= 1
+                elif ch == curses.KEY_LEFT:
+                    cursor_pos = max(0, cursor_pos - 1)
+                elif ch == curses.KEY_RIGHT:
+                    cursor_pos = min(len(text), cursor_pos + 1)
+                elif ch == curses.KEY_HOME or ch == 1:  # Home or Ctrl-A
+                    cursor_pos = 0
+                elif ch == curses.KEY_END or ch == 5:  # End or Ctrl-E
+                    cursor_pos = len(text)
+                elif 32 <= ch <= 126:  # Printable ASCII
+                    if len(text) < max_width:
+                        text = text[:cursor_pos] + chr(ch) + text[cursor_pos:]
+                        cursor_pos += 1
+
+        except curses.error:
+            curses.curs_set(0)
+            return None
+
+    def _prompt_for_issue_selection(self, stdscr, jql: str, height: int, width: int) -> Optional[str]:
+        """Execute JQL search and prompt user to select issue. Returns issue key or None."""
+        # Show loading message
+        menu_height = 5
+        menu_width = min(60, width - 4)
+        start_y = (height - menu_height) // 2
+        start_x = (width - menu_width) // 2
+
+        try:
+            overlay = curses.newwin(menu_height, menu_width, start_y, start_x)
+            overlay.clear()
+            overlay.box()
+            overlay.addstr(menu_height // 2, 2, "Searching...")
+            overlay.refresh()
+
+            # Normalize input (convert issue keys to JQL, upcase them)
+            jql = self.normalize_jql_input(jql)
+
+            # URL encode the JQL query
+            encoded_jql = quote(jql)
+
+            # Execute JQL query (using /search/jql endpoint, not deprecated /search)
+            endpoint = f"/search/jql?jql={encoded_jql}&maxResults=50&fields=key,summary"
+            response = self.viewer.utils.call_jira_api(endpoint)
+
+            if not response or 'issues' not in response:
+                return None
+
+            issues = response['issues']
+            if not issues:
+                return None
+
+            # Show issue selection menu
+            menu_height = min(len(issues) + 6, height - 4)
+            menu_width = min(80, width - 4)
+            start_y = (height - menu_height) // 2
+            start_x = (width - menu_width) // 2
+
+            cursor_pos = 0
+            search_filter = ""
+
+            overlay = curses.newwin(menu_height, menu_width, start_y, start_x)
+
+            while True:
+                # Filter issues by search
+                filtered_issues = issues
+                if search_filter:
+                    search_lower = search_filter.lower()
+                    filtered_issues = [
+                        issue for issue in issues
+                        if search_lower in issue.get('key', '').lower() or
+                           search_lower in issue.get('fields', {}).get('summary', '').lower()
+                    ]
+
+                cursor_pos = min(cursor_pos, len(filtered_issues) - 1) if filtered_issues else 0
+
+                overlay.clear()
+                overlay.box()
+                overlay.addstr(0, 2, f" Select Issue ({len(filtered_issues)} found) ", curses.A_BOLD)
+
+                # Show search filter if active
+                if search_filter:
+                    overlay.addstr(1, 2, f"Filter: {search_filter}", curses.A_DIM)
+
+                # List filtered issues
+                visible_height = menu_height - 4
+                start_idx = max(0, cursor_pos - visible_height + 1) if cursor_pos >= visible_height else 0
+
+                for idx in range(start_idx, min(start_idx + visible_height, len(filtered_issues))):
+                    issue = filtered_issues[idx]
+                    attr = curses.A_REVERSE if idx == cursor_pos else curses.A_NORMAL
+                    key = issue.get('key', 'UNKNOWN')
+                    summary = issue.get('fields', {}).get('summary', 'No summary')
+                    display = f" {key}: {summary}"
+                    overlay.addstr(idx - start_idx + 2, 2, display[:menu_width - 4], attr)
+
+                # Footer
+                overlay.addstr(menu_height - 1, 2, "Enter: select  /: filter  q: cancel")
+                overlay.refresh()
+
+                ch = overlay.getch()
+
+                if ch == ord('q') or ch == 27:  # q or ESC
+                    return None
+                elif ch in [curses.KEY_DOWN, ord('j')]:
+                    cursor_pos = min(cursor_pos + 1, len(filtered_issues) - 1)
+                elif ch in [curses.KEY_UP, ord('k')]:
+                    cursor_pos = max(cursor_pos - 1, 0)
+                elif ch == ord('/'):  # Start filtering
+                    curses.echo()
+                    curses.curs_set(1)
+                    overlay.addstr(menu_height - 2, 2, "Filter: ")
+                    overlay.clrtoeol()
+                    overlay.refresh()
+                    filter_input = overlay.getstr(menu_height - 2, 10, menu_width - 14).decode('utf-8', errors='ignore')
+                    curses.noecho()
+                    curses.curs_set(0)
+                    search_filter = filter_input.strip()
+                    cursor_pos = 0
+                elif ch == ord('\n'):  # Enter to select
+                    if filtered_issues:
+                        return filtered_issues[cursor_pos].get('key')
+
+        except curses.error:
+            return None
+
+    def _prompt_for_link_comment(self, stdscr, from_key: str, to_key: str,
+                                   link_type: str, direction: str, height: int, width: int) -> Optional[str]:
+        """
+        Prompt user to add an optional comment to the link using vim.
+
+        Returns:
+            - None if user aborted (deleted all content)
+            - Empty string if user saved with only comments (no comment, but proceed)
+            - Comment text if user added uncommented content
+        """
+        import tempfile
+        import subprocess
+        import os
+
+        # Create temp file with link details as template
+        template_lines = [
+            f"# Creating Issue Link",
+            f"#",
+            f"# From: {from_key}",
+            f"# Type: {link_type} ({direction})",
+            f"# To:   {to_key}",
+            f"#",
+            f"# Enter an optional comment below (lines starting with # will be ignored).",
+            f"# To create link WITHOUT a comment: leave only the # lines (this template).",
+            f"# To CANCEL link creation: delete all content (including # lines).",
+            f"#",
+            ""
+        ]
+        template_content = '\n'.join(template_lines)
+
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+            temp_path = f.name
+            f.write(template_content)
+
+        # Open vim editor
+        curses.def_prog_mode()
+        curses.endwin()
+
+        try:
+            subprocess.call(['vim', temp_path])
+        finally:
+            curses.reset_prog_mode()
+            stdscr.refresh()
+
+        # Check if file still exists (user might have deleted it)
+        if not os.path.exists(temp_path):
+            return None
+
+        # Read the file
+        try:
+            with open(temp_path, 'r') as f:
+                content = f.read()
+
+            os.unlink(temp_path)
+
+            # Check if file is completely empty (user deleted everything = abort)
+            if not content.strip():
+                return None
+
+            # Extract comment (remove lines starting with #)
+            lines = content.split('\n')
+            comment_lines = [line.rstrip() for line in lines if not line.strip().startswith('#')]
+            comment_text = '\n'.join(comment_lines).strip()
+
+            # Return comment text (empty string if only # lines remain = no comment but proceed)
+            return comment_text
+
+        except Exception as e:
+            # Error reading file - treat as abort
+            try:
+                os.unlink(temp_path)
+            except:
+                pass
+            return None
+
+    def _add_issue_link(self, stdscr, ticket_key: str, height: int, width: int):
+        """Complete flow to add an issue link."""
+        while True:  # Outer loop - allows going back to link type selection
+            # Step 1: Select link type
+            link_type = self._prompt_for_link_type(stdscr, height, width)
+            if not link_type:
+                return  # User quit at link type selection
+
+            # Step 2: Select direction
+            direction = self._prompt_for_link_direction(stdscr, link_type, height, width)
+            if not direction:
+                continue  # Go back to link type selection
+
+            # Steps 3-4: Search for target issue (allow retrying on failure)
+            target_key = None
+            error_message = None
+            while not target_key:
+                # Step 3: Prompt for JQL query
+                jql = self._prompt_for_jql_search(stdscr, height, width, error_message)
+                if jql is None:
+                    # None means ESC - go back to link type
+                    break  # Break out of JQL loop to go back to link type
+                elif jql == "":
+                    # Empty string means cancel completely
+                    return
+
+                # Step 4: Execute search and select issue
+                target_key = self._prompt_for_issue_selection(stdscr, jql, height, width)
+                if not target_key:
+                    # Search failed or no results - set error and loop to retry
+                    error_message = "Search failed or no results. Try another query or press ESC to go back."
+                    continue
+
+            # If we broke out of the JQL loop without a target_key, go back to link type
+            if not target_key:
+                continue
+
+            # Step 5: Prompt for optional comment
+            link_type_name = link_type.get('name', 'Unknown')
+            direction_label = link_type.get(direction, direction)
+
+            comment_result = self._prompt_for_link_comment(
+                stdscr, ticket_key, target_key, link_type_name, direction_label, height, width
+            )
+
+            if comment_result is None:
+                # User aborted (exited without saving)
+                self._show_message(stdscr, "Link creation cancelled", height, width)
+                return
+
+            comment_text = comment_result  # May be empty string if no comment
+
+            # Step 6: Create link with optional comment
+            try:
+                # Show creating message
+                menu_height = 5
+                menu_width = min(60, width - 4)
+                start_y = (height - menu_height) // 2
+                start_x = (width - menu_width) // 2
+
+                overlay = curses.newwin(menu_height, menu_width, start_y, start_x)
+                overlay.clear()
+                overlay.box()
+                overlay.addstr(menu_height // 2, 2, "Creating link...")
+                overlay.refresh()
+
+                # Determine inward/outward issue based on direction
+                if direction == 'inward':
+                    inward_key = ticket_key
+                    outward_key = target_key
+                else:
+                    inward_key = target_key
+                    outward_key = ticket_key
+
+                payload = {
+                    "type": {"name": link_type_name},
+                    "inwardIssue": {"key": inward_key},
+                    "outwardIssue": {"key": outward_key}
+                }
+
+                # Add comment if provided
+                if comment_text:
+                    # Convert plain text to Atlassian Document Format (ADF)
+                    adf_body = self._text_to_adf(comment_text)
+                    payload["comment"] = {"body": adf_body}
+
+                response = self.viewer.utils.call_jira_api('/issueLink', method='POST', data=payload)
+
+                if response is not None:
+                    self._show_message(stdscr, "✓ Link created", height, width)
+                else:
+                    self._show_message(stdscr, "✗ Failed to create link", height, width)
+
+                return  # Exit after creating link
+
+            except curses.error:
+                pass
+
+    def _prompt_for_remove_link_comment(self, stdscr, from_key: str, to_key: str,
+                                          link_type: str, direction: str, height: int, width: int) -> Optional[str]:
+        """
+        Prompt user to add an optional comment when removing a link using vim.
+
+        Returns:
+            - None if user aborted (deleted all content)
+            - Empty string if user saved with only comments (no comment, but proceed)
+            - Comment text if user added uncommented content
+        """
+        import tempfile
+        import subprocess
+        import os
+
+        # Create temp file with link details as template
+        template_lines = [
+            f"# Removing Issue Link",
+            f"#",
+            f"# From: {from_key}",
+            f"# Type: {link_type} ({direction})",
+            f"# To:   {to_key}",
+            f"#",
+            f"# Enter an optional comment below (lines starting with # will be ignored).",
+            f"# Comment will be added to {from_key} before removing the link.",
+            f"# To remove link WITHOUT a comment: leave only the # lines (this template).",
+            f"# To CANCEL link removal: delete all content (including # lines).",
+            f"#",
+            ""
+        ]
+        template_content = '\n'.join(template_lines)
+
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+            temp_path = f.name
+            f.write(template_content)
+
+        # Open vim editor
+        curses.def_prog_mode()
+        curses.endwin()
+
+        try:
+            subprocess.call(['vim', temp_path])
+        finally:
+            curses.reset_prog_mode()
+            stdscr.refresh()
+
+        # Check if file still exists (user might have deleted it)
+        if not os.path.exists(temp_path):
+            return None
+
+        # Read the file
+        try:
+            with open(temp_path, 'r') as f:
+                content = f.read()
+
+            os.unlink(temp_path)
+
+            # Check if file is completely empty (user deleted everything = abort)
+            if not content.strip():
+                return None
+
+            # Extract comment (remove lines starting with #)
+            lines = content.split('\n')
+            comment_lines = [line.rstrip() for line in lines if not line.strip().startswith('#')]
+            comment_text = '\n'.join(comment_lines).strip()
+
+            # Return comment text (empty string if only # lines remain = no comment but proceed)
+            return comment_text
+
+        except Exception as e:
+            # Error reading file - treat as abort
+            try:
+                os.unlink(temp_path)
+            except:
+                pass
+            return None
+
+    def _remove_issue_link(self, stdscr, ticket_key: str, issue_links: list, height: int, width: int):
+        """Handle removing an issue link."""
+        if not issue_links:
+            self._show_message(stdscr, "No issue links to remove", height, width)
+            return
+
+        # Format links for display
+        formatted_links = []
+        for link in issue_links:
+            link_type = link.get('type', {})
+            link_type_name = link_type.get('name', 'Unknown')
+
+            # Determine direction and target
+            if 'inwardIssue' in link:
+                direction = link_type.get('inward', 'inward')
+                target_issue = link['inwardIssue']
+            else:
+                direction = link_type.get('outward', 'outward')
+                target_issue = link['outwardIssue']
+
+            target_key = target_issue.get('key', 'UNKNOWN')
+            target_summary = target_issue.get('fields', {}).get('summary', 'No summary')
+
+            formatted_links.append({
+                'id': link.get('id'),
+                'display': f"{link_type_name} ({direction}): {target_key} - {target_summary}",
+                'target_key': target_key,
+                'link_type_name': link_type_name,
+                'direction': direction
+            })
+
+        # Show selection menu
+        menu_height = min(len(formatted_links) + 5, height - 4)
+        menu_width = min(90, width - 4)
+        start_y = (height - menu_height) // 2
+        start_x = (width - menu_width) // 2
+
+        cursor_pos = 0
+
+        try:
+            overlay = curses.newwin(menu_height, menu_width, start_y, start_x)
+
+            while True:
+                overlay.clear()
+                overlay.box()
+                overlay.addstr(0, 2, " Remove Issue Link ", curses.A_BOLD)
+
+                # List links
+                visible_height = menu_height - 4
+                start_idx = max(0, cursor_pos - visible_height + 1) if cursor_pos >= visible_height else 0
+
+                for idx in range(start_idx, min(start_idx + visible_height, len(formatted_links))):
+                    link_info = formatted_links[idx]
+                    attr = curses.A_REVERSE if idx == cursor_pos else curses.A_NORMAL
+                    display = f" {idx + 1}. {link_info['display']}"
+                    overlay.addstr(idx - start_idx + 2, 2, display[:menu_width - 4], attr)
+
+                overlay.addstr(menu_height - 1, 2, "Enter: select  q: cancel")
+                overlay.refresh()
+
+                ch = overlay.getch()
+
+                if ch == ord('q') or ch == 27:  # q or ESC
+                    return
+                elif ch in [curses.KEY_DOWN, ord('j')]:
+                    cursor_pos = min(cursor_pos + 1, len(formatted_links) - 1)
+                elif ch in [curses.KEY_UP, ord('k')]:
+                    cursor_pos = max(cursor_pos - 1, 0)
+                elif ch == ord('\n'):  # Enter to select
+                    selected_link = formatted_links[cursor_pos]
+                    link_id = selected_link['id']
+                    display = selected_link['display']
+                    target_key = selected_link['target_key']
+                    link_type_name = selected_link['link_type_name']
+                    direction = selected_link['direction']
+
+                    # Prompt for optional comment
+                    comment_result = self._prompt_for_remove_link_comment(
+                        stdscr, ticket_key, target_key, link_type_name, direction, height, width
+                    )
+
+                    if comment_result is None:
+                        # User aborted (exited without saving)
+                        self._show_message(stdscr, "Link removal cancelled", height, width)
+                        return
+
+                    comment_text = comment_result  # May be empty string if no comment
+
+                    # Show processing message
+                    confirm_height = 5
+                    confirm_width = min(80, width - 4)
+                    confirm_y = (height - confirm_height) // 2
+                    confirm_x = (width - confirm_width) // 2
+
+                    confirm_overlay = curses.newwin(confirm_height, confirm_width, confirm_y, confirm_x)
+                    confirm_overlay.clear()
+                    confirm_overlay.box()
+                    confirm_overlay.addstr(confirm_height // 2, 2, "Removing link...")
+                    confirm_overlay.refresh()
+
+                    # Add comment if provided
+                    if comment_text:
+                        adf_body = self._text_to_adf(comment_text)
+                        comment_payload = {
+                            "body": adf_body
+                        }
+                        comment_endpoint = f"/issue/{ticket_key}/comment"
+                        self.viewer.utils.call_jira_api(comment_endpoint, method='POST', data=comment_payload)
+
+                    # Delete the link
+                    endpoint = f"/issueLink/{link_id}"
+                    response = self.viewer.utils.call_jira_api(endpoint, method='DELETE')
+
+                    if response is not None:
+                        self._show_message(stdscr, "✓ Link removed", height, width)
+                    else:
+                        self._show_message(stdscr, "✗ Failed to remove link", height, width)
+
+                    return
+
+        except curses.error:
+            pass
+
     def _get_legend_items(self):
         """Get legend items with colors in the order they should appear."""
         # Order: Blue (backlog), Yellow (active), Green (done), Red (blocked)
@@ -2682,6 +3527,7 @@ class JiraTUI:
             "  v          Open ticket in browser",
             "  t          Transition ticket",
             "  c          Add comment to ticket",
+            "  l          Manage issue links",
             "  n          Create new issue",
             "  s          New query (JQL or ticket key)",
             "  S          Edit current query",
