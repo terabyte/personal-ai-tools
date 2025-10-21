@@ -991,7 +991,7 @@ class JiraTUI:
         all_users = self.viewer.utils.get_users(query=input_value)
 
         if not all_users:
-            return (False, None, f"No users found matching '{input_value}'")
+            return (False, None, f"No users found matching '{input_value}'. Try full name, email, or username (e.g., 'cmyers')")
 
         # Find exact matches (displayName, email, email prefix)
         exact_matches = self._find_exact_user_matches(all_users, input_value)

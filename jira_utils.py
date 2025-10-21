@@ -650,10 +650,12 @@ class JiraUtils:
             # Don't search with empty/short queries - returns external users
             return []
 
+        from urllib.parse import quote
         query_param = query.strip()
+        query_encoded = quote(query_param)
 
         # Search with actual query (returns real users with email addresses)
-        endpoint = f'/user/search?query={query_param}&maxResults=1000'
+        endpoint = f'/user/search?query={query_encoded}&maxResults=1000'
         response = self.call_jira_api(endpoint)
 
         if not response or not isinstance(response, list):
