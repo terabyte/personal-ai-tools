@@ -364,8 +364,8 @@ def main():
     parser = argparse.ArgumentParser(description='Show DFR rotation schedules')
     parser.add_argument('--team', action='append', help='Filter to specific team(s)')
     parser.add_argument('--weeks', type=int, default=2, help='Number of weeks to show (default: 2)')
-    parser.add_argument('--mode', choices=['long', 'condensed', 'short'], default='long',
-                        help='Display mode: long (full headers per team), condensed (shared headers), short (text summary)')
+    parser.add_argument('--mode', choices=['long', 'condensed', 'short'], default='condensed',
+                        help='Display mode: long (full headers per team), condensed (shared headers, default), short (text summary)')
     args = parser.parse_args()
 
     # Load teams
