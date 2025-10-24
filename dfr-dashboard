@@ -1,0 +1,275 @@
+#!/usr/bin/env python3
+"""
+DFR Dashboard - Show who is on DFR rotation with visual calendar display
+"""
+
+import argparse
+import configparser
+import hashlib
+import json
+import shutil
+import subprocess
+import sys
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Dict, List, Tuple, Optional
+
+
+# Dark ANSI 256 colors for backgrounds that provide good contrast with white text
+DARK_COLORS = [
+    # Dark blues
+    17, 18, 19, 20, 21, 25, 26, 27,
+    # Dark greens
+    22, 28, 29, 34, 35, 64, 65,
+    # Dark cyans/teals
+    23, 24, 30, 31, 36, 37, 66, 67,
+    # Dark reds
+    52, 88, 124, 160,
+    # Dark magentas/purples
+    53, 54, 55, 89, 90, 91, 125, 126, 127, 161, 162, 163,
+    # Dark oranges/browns
+    94, 130, 166,
+    # Additional dark colors
+    58, 59, 60, 61, 62, 63, 95, 96, 97, 98, 99, 100
+]
+
+SYMBOLS = ['*', '#', '@', '+', '=', '~', '^', '%', '&', '$']
+
+
+def call_pagerduty_api(endpoint: str) -> Optional[dict]:
+    """Call the pagerduty-api script and return parsed JSON"""
+    script_dir = Path(__file__).parent
+    api_script = script_dir / 'pagerduty-api'
+
+    cmd = [str(api_script), 'GET', endpoint]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+
+    if result.returncode != 0:
+        print(f"Error calling PagerDuty API: {result.stderr}", file=sys.stderr)
+        return None
+
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError as e:
+        print(f"Error parsing JSON: {e}", file=sys.stderr)
+        return None
+
+
+def get_name_color(name: str) -> int:
+    """Get consistent color index for a name"""
+    hash_val = int(hashlib.md5(name.encode()).hexdigest(), 16)
+    return DARK_COLORS[hash_val % len(DARK_COLORS)]
+
+
+def color_text(text: str, bg_color: int) -> str:
+    """Return text with colored background and white foreground"""
+    return f"\033[48;5;{bg_color}m\033[38;5;15m{text}\033[0m"
+
+
+def load_teams_config() -> Dict[str, Dict[str, str]]:
+    """Load teams.conf and return teams with DFR schedules"""
+    config_file = Path(__file__).parent / 'teams.conf'
+    config = configparser.ConfigParser()
+    config.read(config_file)
+
+    teams = {}
+    for section in config.sections():
+        if config.has_option(section, 'dfr_schedule_id'):
+            teams[section] = {
+                'display_name': config.get(section, 'display_name', fallback=section.upper()),
+                'schedule_id': config.get(section, 'dfr_schedule_id'),
+            }
+
+    return teams
+
+
+def get_schedule_entries(schedule_id: str, start_date: datetime, end_date: datetime) -> List[dict]:
+    """Get PagerDuty schedule entries for a date range"""
+    since = start_date.strftime('%Y-%m-%dT00:00:00Z')
+    until = end_date.strftime('%Y-%m-%dT23:59:59Z')
+
+    endpoint = f"/schedules/{schedule_id}?since={since}&until={until}"
+    data = call_pagerduty_api(endpoint)
+
+    if not data or 'schedule' not in data:
+        return []
+
+    schedule = data['schedule']
+    if 'final_schedule' not in schedule:
+        return []
+
+    final_schedule = schedule['final_schedule']
+    if 'rendered_schedule_entries' not in final_schedule:
+        return []
+
+    return final_schedule['rendered_schedule_entries']
+
+
+def build_hourly_schedule(entries: List[dict], start_date: datetime, num_days: int) -> Dict[int, List[Optional[str]]]:
+    """Build hour-by-hour schedule for each day (day_index -> [24 hours of names])"""
+    schedule = {}
+
+    for day_idx in range(num_days):
+        schedule[day_idx] = [None] * 24
+
+    for entry in entries:
+        start = datetime.fromisoformat(entry['start'].replace('Z', '+00:00'))
+        end = datetime.fromisoformat(entry['end'].replace('Z', '+00:00'))
+        user = entry['user']['summary']
+
+        # Fill in each hour this person is on-call
+        current = start
+        while current < end:
+            day_idx = (current.date() - start_date.date()).days
+            if 0 <= day_idx < num_days:
+                hour = current.hour
+                schedule[day_idx][hour] = user
+            current += timedelta(hours=1)
+
+    return schedule
+
+
+def render_day_blocks(hours: List[Optional[str]]) -> Tuple[str, Dict[str, str]]:
+    """Render 24-hour block for a single day, return (rendered_string, legend_dict)"""
+    result = []
+    legend = {}
+    symbol_idx = 0
+
+    i = 0
+    while i < 24:
+        if hours[i] is None:
+            result.append('-')
+            i += 1
+            continue
+
+        # Find contiguous block with same person
+        person = hours[i]
+        start_hour = i
+        while i < 24 and hours[i] == person:
+            i += 1
+        block_len = i - start_hour
+
+        # Determine if we can fit the name or need a symbol
+        if block_len >= len(person):
+            # Fit name, pad/truncate as needed
+            text = person[:block_len].ljust(block_len)
+            color = get_name_color(person)
+            result.append(color_text(text, color))
+        elif block_len >= 4:
+            # Short but readable, show truncated name
+            text = person[:block_len]
+            color = get_name_color(person)
+            result.append(color_text(text, color))
+        else:
+            # Very short, use symbol
+            symbol = SYMBOLS[symbol_idx % len(SYMBOLS)]
+            symbol_idx += 1
+
+            color = get_name_color(person)
+            result.append(color_text(symbol * block_len, color))
+
+            # Add to legend
+            time_range = f"{start_hour:02d}:00-{i:02d}:00"
+            legend[symbol] = f"{person} ({time_range})"
+
+    return ''.join(result), legend
+
+
+def render_schedule(team_name: str, display_name: str, schedule: Dict[int, List[Optional[str]]],
+                    start_date: datetime, terminal_width: int):
+    """Render the schedule for a team"""
+    print("=" * terminal_width)
+    print(display_name)
+    print("-" * terminal_width)
+
+    num_days = len(schedule)
+    days_per_row = max(1, (terminal_width - 5) // 25)  # 24 chars + 1 space
+
+    current_date = start_date
+    day_idx = 0
+
+    while day_idx < num_days:
+        # Determine how many days in this row
+        days_in_row = min(days_per_row, num_days - day_idx)
+
+        # Find week range
+        week_start = current_date + timedelta(days=day_idx)
+        week_end = current_date + timedelta(days=min(day_idx + 6, num_days - 1))
+        print(f"\nWeek of {week_start.strftime('%b %d')} - {week_end.strftime('%b %d')}:")
+        print()
+
+        # Render in weekly chunks
+        week_days_shown = 0
+        while week_days_shown < 7 and day_idx < num_days:
+            days_in_chunk = min(days_per_row, 7 - week_days_shown, num_days - day_idx)
+
+            # Row 1: Day names and dates
+            header_parts = []
+            for d in range(days_in_chunk):
+                date = current_date + timedelta(days=day_idx + d)
+                day_str = date.strftime('%a %m/%d')
+                header_parts.append(day_str.ljust(24))
+            print(' '.join(header_parts))
+
+            # Row 2: Hour markers
+            hour_markers = "0----6----12---18---23"
+            marker_parts = [hour_markers.ljust(24) for _ in range(days_in_chunk)]
+            print(' '.join(marker_parts))
+
+            # Row 3: Colored blocks
+            block_parts = []
+            all_legends = {}
+            for d in range(days_in_chunk):
+                blocks, legend = render_day_blocks(schedule[day_idx + d])
+                block_parts.append(blocks)
+                all_legends.update(legend)
+            print(' '.join(block_parts))
+
+            # Show legend if any symbols used
+            if all_legends:
+                print()
+                legend_text = "  ".join([f"{sym} = {desc}" for sym, desc in sorted(all_legends.items())])
+                print(f"Legend: {legend_text}")
+
+            day_idx += days_in_chunk
+            week_days_shown += days_in_chunk
+            print()
+
+    print()
+
+
+def main():
+    parser = argparse.ArgumentParser(description='Show DFR rotation schedules')
+    parser.add_argument('--team', action='append', help='Filter to specific team(s)')
+    parser.add_argument('--weeks', type=int, default=2, help='Number of weeks to show (default: 2)')
+    args = parser.parse_args()
+
+    # Load teams
+    teams = load_teams_config()
+
+    # Filter teams if requested
+    if args.team:
+        teams = {k: v for k, v in teams.items() if k in args.team}
+        if not teams:
+            print(f"Error: No teams found matching {args.team}", file=sys.stderr)
+            sys.exit(1)
+
+    # Calculate date range (start from Monday of current week)
+    today = datetime.now()
+    days_since_monday = today.weekday()
+    start_date = today - timedelta(days=days_since_monday)
+    num_days = args.weeks * 7
+    end_date = start_date + timedelta(days=num_days)
+
+    # Get terminal width
+    terminal_width = min(shutil.get_terminal_size().columns, 200)
+
+    # Process each team
+    for team_key, team_info in sorted(teams.items()):
+        entries = get_schedule_entries(team_info['schedule_id'], start_date, end_date)
+        schedule = build_hourly_schedule(entries, start_date, num_days)
+        render_schedule(team_key, team_info['display_name'], schedule, start_date, terminal_width)
+
+
+if __name__ == '__main__':
+    main()
