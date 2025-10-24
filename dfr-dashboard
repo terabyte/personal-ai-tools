@@ -250,6 +250,11 @@ def render_condensed_mode(team_schedules: List[Tuple[str, str, Dict[int, List[Op
     current_date = start_date
     day_idx = 0
 
+    # Track used symbols globally to avoid reuse
+    symbol_map = {}  # (person, time_range) -> symbol
+    next_symbol_idx = 0
+    all_legends = []  # List of (symbol, description) tuples
+
     print("=" * terminal_width)
     print("DFR ROTATION SCHEDULE - ALL TEAMS")
     print("=" * terminal_width)
@@ -287,6 +292,24 @@ def render_condensed_mode(team_schedules: List[Tuple[str, str, Dict[int, List[Op
                 block_parts = [team_label]
                 for d in range(days_in_chunk):
                     blocks, legend = render_day_blocks(schedule[day_idx + d])
+
+                    # Collect legends with globally unique symbols
+                    for symbol, desc in legend.items():
+                        key = desc  # Use full description as key to avoid reuse
+                        if key not in symbol_map:
+                            # Assign a new unique symbol
+                            new_symbol = SYMBOLS[next_symbol_idx % len(SYMBOLS)]
+                            next_symbol_idx += 1
+                            symbol_map[key] = new_symbol
+                            all_legends.append((new_symbol, desc))
+
+                        # Replace symbol in blocks if needed
+                        if symbol != symbol_map[key]:
+                            color = get_name_color(desc.split()[0])  # Get color from person name
+                            old_colored = color_text(symbol, color)
+                            new_colored = color_text(symbol_map[key], color)
+                            blocks = blocks.replace(old_colored, new_colored)
+
                     block_parts.append(blocks)
                 print(' '.join(block_parts))
 
@@ -294,7 +317,13 @@ def render_condensed_mode(team_schedules: List[Tuple[str, str, Dict[int, List[Op
             week_days_shown += days_in_chunk
             print()
 
-    print()
+    # Display legend at the bottom
+    if all_legends:
+        print()
+        print("Legend:")
+        for symbol, desc in all_legends:
+            print(f"  {symbol} = {desc}")
+        print()
 
 
 def render_schedule(team_name: str, display_name: str, schedule: Dict[int, List[Optional[str]]],
@@ -386,7 +415,10 @@ def main():
     end_date = start_date + timedelta(days=num_days)
 
     # Get terminal width
-    terminal_width = min(shutil.get_terminal_size().columns, 200)
+    try:
+        terminal_width = shutil.get_terminal_size().columns
+    except:
+        terminal_width = 120
 
     # Fetch schedules for all teams
     team_schedules = []
