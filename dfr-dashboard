@@ -175,9 +175,131 @@ def render_day_blocks(hours: List[Optional[str]]) -> Tuple[str, Dict[str, str]]:
     return ''.join(result), legend
 
 
+def get_current_and_next_oncall(schedule: Dict[int, List[Optional[str]]], start_date: datetime) -> List[Tuple[str, datetime, datetime]]:
+    """Get current and next unique on-call persons with their time ranges"""
+    current_time = datetime.now()
+
+    # Find all shifts
+    shifts = []
+    for day_idx in sorted(schedule.keys()):
+        prev_person = None
+        shift_start_hour = None
+
+        for hour in range(24):
+            person = schedule[day_idx][hour]
+
+            if person != prev_person:
+                # End previous shift
+                if prev_person is not None and shift_start_hour is not None:
+                    shift_end = start_date + timedelta(days=day_idx, hours=hour)
+                    shifts.append((prev_person, shift_start, shift_end))
+
+                # Start new shift
+                if person is not None:
+                    shift_start = start_date + timedelta(days=day_idx, hours=hour)
+                    shift_start_hour = hour
+
+                prev_person = person
+
+        # End shift at end of day
+        if prev_person is not None:
+            shift_end = start_date + timedelta(days=day_idx, hours=24)
+            shifts.append((prev_person, shift_start, shift_end))
+
+    # Filter to current and future shifts
+    relevant_shifts = [s for s in shifts if s[2] > current_time]
+
+    # Return up to 2 unique people
+    result = []
+    seen_people = set()
+    for person, start, end in relevant_shifts:
+        if person not in seen_people:
+            result.append((person, start, end))
+            seen_people.add(person)
+            if len(result) >= 2:
+                break
+
+    return result
+
+
+def render_short_mode(team_schedules: List[Tuple[str, str, Dict[int, List[Optional[str]]]]],
+                      start_date: datetime, num_days: int):
+    """Render short text summary mode"""
+    for team_key, display_name, schedule in team_schedules:
+        shifts = get_current_and_next_oncall(schedule, start_date)
+
+        if not shifts:
+            print(f"{display_name}: No coverage scheduled")
+            continue
+
+        parts = [f"{display_name}:"]
+        for person, start, end in shifts:
+            color = get_name_color(person)
+            colored_name = color_text(person, color)
+            end_str = end.strftime('%b %d %H:%M')
+            parts.append(f"{colored_name} (until {end_str})")
+
+        print(" ".join(parts))
+
+
+def render_condensed_mode(team_schedules: List[Tuple[str, str, Dict[int, List[Optional[str]]]]],
+                          start_date: datetime, num_days: int, terminal_width: int):
+    """Render condensed mode with shared headers"""
+    days_per_row = max(1, (terminal_width - 30) // 25)  # Leave room for team labels
+
+    current_date = start_date
+    day_idx = 0
+
+    print("=" * terminal_width)
+    print("DFR ROTATION SCHEDULE - ALL TEAMS")
+    print("=" * terminal_width)
+
+    while day_idx < num_days:
+        # Find week range
+        week_start = current_date + timedelta(days=day_idx)
+        week_end = current_date + timedelta(days=min(day_idx + 6, num_days - 1))
+        print(f"\nWeek of {week_start.strftime('%b %d')} - {week_end.strftime('%b %d')}:")
+        print()
+
+        # Render in weekly chunks
+        week_days_shown = 0
+        while week_days_shown < 7 and day_idx < num_days:
+            days_in_chunk = min(days_per_row, 7 - week_days_shown, num_days - day_idx)
+
+            # Row 1: Day names and dates (with padding for team label)
+            header_parts = ["                              "]  # Padding for team names
+            for d in range(days_in_chunk):
+                date = current_date + timedelta(days=day_idx + d)
+                day_str = date.strftime('%a %m/%d')
+                header_parts.append(day_str.ljust(24))
+            print(' '.join(header_parts))
+
+            # Row 2: Hour markers
+            marker_parts = ["                              "]
+            hour_markers = "0----6----12---18---23"
+            marker_parts.extend([hour_markers.ljust(24) for _ in range(days_in_chunk)])
+            print(' '.join(marker_parts))
+
+            # Row 3+: Each team gets a row
+            for team_key, display_name, schedule in team_schedules:
+                team_label = display_name[:28].ljust(28) + ": "
+
+                block_parts = [team_label]
+                for d in range(days_in_chunk):
+                    blocks, legend = render_day_blocks(schedule[day_idx + d])
+                    block_parts.append(blocks)
+                print(' '.join(block_parts))
+
+            day_idx += days_in_chunk
+            week_days_shown += days_in_chunk
+            print()
+
+    print()
+
+
 def render_schedule(team_name: str, display_name: str, schedule: Dict[int, List[Optional[str]]],
                     start_date: datetime, terminal_width: int):
-    """Render the schedule for a team"""
+    """Render the schedule for a team (long mode)"""
     print("=" * terminal_width)
     print(display_name)
     print("-" * terminal_width)
@@ -242,6 +364,8 @@ def main():
     parser = argparse.ArgumentParser(description='Show DFR rotation schedules')
     parser.add_argument('--team', action='append', help='Filter to specific team(s)')
     parser.add_argument('--weeks', type=int, default=2, help='Number of weeks to show (default: 2)')
+    parser.add_argument('--mode', choices=['long', 'condensed', 'short'], default='long',
+                        help='Display mode: long (full headers per team), condensed (shared headers), short (text summary)')
     args = parser.parse_args()
 
     # Load teams
@@ -264,11 +388,21 @@ def main():
     # Get terminal width
     terminal_width = min(shutil.get_terminal_size().columns, 200)
 
-    # Process each team
-    for team_key, team_info in sorted(teams.items()):
+    # Fetch schedules for all teams
+    team_schedules = []
+    for team_key, team_info in teams.items():
         entries = get_schedule_entries(team_info['schedule_id'], start_date, end_date)
         schedule = build_hourly_schedule(entries, start_date, num_days)
-        render_schedule(team_key, team_info['display_name'], schedule, start_date, terminal_width)
+        team_schedules.append((team_key, team_info['display_name'], schedule))
+
+    # Render based on mode
+    if args.mode == 'short':
+        render_short_mode(team_schedules, start_date, num_days)
+    elif args.mode == 'condensed':
+        render_condensed_mode(team_schedules, start_date, num_days, terminal_width)
+    else:  # long
+        for team_key, display_name, schedule in team_schedules:
+            render_schedule(team_key, display_name, schedule, start_date, terminal_width)
 
 
 if __name__ == '__main__':
