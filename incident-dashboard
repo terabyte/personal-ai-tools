@@ -1,0 +1,416 @@
+#!/usr/bin/env python3
+"""
+Incident Dashboard - Show PagerDuty incidents for team services
+"""
+
+import argparse
+import configparser
+import json
+import shutil
+import subprocess
+import sys
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Dict, List, Tuple, Optional
+
+
+# ANSI color codes
+class Colors:
+    RED = '\033[91m'
+    YELLOW = '\033[93m'
+    GREEN = '\033[92m'
+    BLUE = '\033[94m'
+    CYAN = '\033[96m'
+    BOLD = '\033[1m'
+    RESET = '\033[0m'
+
+
+def call_pagerduty_api(endpoint: str) -> Optional[dict]:
+    """Call the pagerduty-api script and return parsed JSON"""
+    script_dir = Path(__file__).parent
+    api_script = script_dir / 'pagerduty-api'
+
+    cmd = [str(api_script), 'GET', endpoint]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+
+    if result.returncode != 0:
+        print(f"Error calling PagerDuty API: {result.stderr}", file=sys.stderr)
+        return None
+
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError as e:
+        print(f"Error parsing JSON: {e}", file=sys.stderr)
+        return None
+
+
+def load_teams_config() -> Dict[str, Dict[str, str]]:
+    """Load teams.conf and return teams with service IDs"""
+    config_file = Path(__file__).parent / 'teams.conf'
+    config = configparser.ConfigParser()
+    config.read(config_file)
+
+    teams = {}
+    for section in config.sections():
+        if config.has_option(section, 'service_ids'):
+            service_ids = config.get(section, 'service_ids')
+            # Strip inline comments
+            service_ids = service_ids.split('#')[0].strip()
+
+            teams[section] = {
+                'display_name': config.get(section, 'display_name', fallback=section.upper()),
+                'service_ids': [s.strip() for s in service_ids.split(',') if s.strip()],
+            }
+
+    return teams
+
+
+def get_incidents(service_ids: List[str], statuses: List[str], since: Optional[str] = None,
+                  until: Optional[str] = None) -> List[dict]:
+    """Get incidents from PagerDuty for given services and statuses"""
+    # Build query parameters
+    params = []
+
+    for service_id in service_ids:
+        params.append(f"service_ids%5B%5D={service_id}")
+
+    for status in statuses:
+        params.append(f"statuses%5B%5D={status}")
+
+    if since:
+        params.append(f"since={since}")
+
+    if until:
+        params.append(f"until={until}")
+
+    params.append("limit=100")
+
+    query = "&".join(params)
+    endpoint = f"/incidents?{query}"
+
+    data = call_pagerduty_api(endpoint)
+    if not data or 'incidents' not in data:
+        return []
+
+    incidents = data['incidents']
+
+    # Handle pagination if needed
+    while data.get('more', False):
+        offset = data.get('offset', 0) + data.get('limit', 100)
+        paginated_endpoint = f"{endpoint}&offset={offset}"
+        data = call_pagerduty_api(paginated_endpoint)
+        if data and 'incidents' in data:
+            incidents.extend(data['incidents'])
+        else:
+            break
+
+    return incidents
+
+
+def format_duration(start_time: str) -> Tuple[str, str]:
+    """Format duration since start time, return (formatted_string, color)"""
+    start = datetime.fromisoformat(start_time.replace('Z', '+00:00'))
+    now = datetime.now(start.tzinfo)
+    delta = now - start
+
+    total_seconds = delta.total_seconds()
+    hours = int(total_seconds // 3600)
+    minutes = int((total_seconds % 3600) // 60)
+
+    if hours > 0:
+        duration_str = f"{hours}h {minutes}m"
+    else:
+        duration_str = f"{minutes}m"
+
+    # Color based on age
+    if total_seconds < 3600:  # < 1 hour
+        color = Colors.RESET
+    elif total_seconds < 14400:  # < 4 hours
+        color = Colors.YELLOW
+    else:  # >= 4 hours
+        color = Colors.RED
+
+    return duration_str, color
+
+
+def format_status(status: str) -> str:
+    """Format status with color"""
+    status_map = {
+        'triggered': (f"{Colors.RED}[TRIG]{Colors.RESET}", Colors.RED),
+        'acknowledged': (f"{Colors.YELLOW}[ACK]{Colors.RESET}", Colors.YELLOW),
+        'resolved': (f"{Colors.GREEN}[RES]{Colors.RESET}", Colors.GREEN),
+    }
+    return status_map.get(status, (f"[{status.upper()}]", Colors.RESET))[0]
+
+
+def format_urgency(urgency: str) -> str:
+    """Format urgency with color"""
+    if urgency == 'high':
+        return f"{Colors.RED}HIGH{Colors.RESET}"
+    else:
+        return "LOW"
+
+
+def truncate_string(s: str, max_length: int) -> str:
+    """Truncate string to max length, add ellipsis if needed"""
+    if len(s) <= max_length:
+        return s
+    return s[:max_length-3] + "..."
+
+
+def render_table_mode(team_incidents: Dict[str, List[dict]], terminal_width: int):
+    """Render incidents in table mode"""
+    # Calculate if we can fit services side-by-side
+    min_service_width = 80
+    services_per_row = max(1, terminal_width // min_service_width)
+
+    for team_name, services in team_incidents.items():
+        if not any(incidents for incidents in services.values()):
+            continue
+
+        print("=" * terminal_width)
+        print(team_name)
+        print("-" * terminal_width)
+
+        # Group services for side-by-side display
+        service_list = list(services.items())
+        for i in range(0, len(service_list), services_per_row):
+            services_chunk = service_list[i:i + services_per_row]
+
+            # Render headers for this chunk
+            if services_per_row == 1:
+                # Single column layout
+                for service_name, incidents in services_chunk:
+                    if not incidents:
+                        continue
+
+                    print(f"\n{Colors.BOLD}Service: {service_name}{Colors.RESET}")
+
+                    # Calculate column widths
+                    status_width = 6
+                    duration_width = 8
+                    urgency_width = 6
+                    assigned_width = 15
+                    title_start = status_width + duration_width + urgency_width + assigned_width + 4
+                    title_width = terminal_width - title_start - 2
+
+                    # Print header
+                    print(f"{'Status':<{status_width}} {'Duration':<{duration_width}} {'Urg':<{urgency_width}} {'Assigned':<{assigned_width}} Title")
+                    print("-" * terminal_width)
+
+                    # Print incidents
+                    for incident in incidents:
+                        status = format_status(incident['status'])
+                        duration, duration_color = format_duration(incident['created_at'])
+                        urgency = format_urgency(incident['urgency'])
+
+                        # Get assigned person
+                        assigned = "Unassigned"
+                        if incident.get('assignments') and len(incident['assignments']) > 0:
+                            assigned = incident['assignments'][0]['assignee']['summary']
+                        assigned = truncate_string(assigned, assigned_width)
+
+                        title = truncate_string(incident['title'], title_width)
+
+                        print(f"{status:<6} {duration_color}{duration:<{duration_width}}{Colors.RESET} {urgency:<6} {assigned:<{assigned_width}} {title}")
+            else:
+                # Multi-column layout (side-by-side services)
+                # For simplicity in wide mode, just list services vertically for now
+                # Can enhance later if needed
+                for service_name, incidents in services_chunk:
+                    if not incidents:
+                        continue
+
+                    print(f"\n{Colors.BOLD}Service: {service_name}{Colors.RESET}")
+                    for incident in incidents:
+                        status = format_status(incident['status'])
+                        duration, duration_color = format_duration(incident['created_at'])
+                        urgency = format_urgency(incident['urgency'])
+
+                        assigned = "Unassigned"
+                        if incident.get('assignments') and len(incident['assignments']) > 0:
+                            assigned = incident['assignments'][0]['assignee']['summary']
+                        assigned = truncate_string(assigned, 15)
+
+                        title = truncate_string(incident['title'], 50)
+                        print(f"  {status} {duration_color}{duration:<8}{Colors.RESET} {urgency:<6} {assigned:<15} {title}")
+
+        print()
+
+
+def render_detailed_mode(team_incidents: Dict[str, List[dict]]):
+    """Render incidents in detailed mode"""
+    for team_name, services in team_incidents.items():
+        if not any(incidents for incidents in services.values()):
+            continue
+
+        print("=" * 80)
+        print(team_name)
+        print("=" * 80)
+
+        for service_name, incidents in services.items():
+            if not incidents:
+                continue
+
+            print(f"\n{Colors.BOLD}{Colors.CYAN}Service: {service_name}{Colors.RESET}")
+            print()
+
+            for incident in incidents:
+                # Status and number
+                status = incident['status'].upper()
+                if status == 'TRIGGERED':
+                    status_colored = f"{Colors.RED}{status}{Colors.RESET}"
+                elif status == 'ACKNOWLEDGED':
+                    status_colored = f"{Colors.YELLOW}{status}{Colors.RESET}"
+                else:
+                    status_colored = f"{Colors.GREEN}{status}{Colors.RESET}"
+
+                incident_num = incident.get('incident_number', 'N/A')
+                urgency = incident['urgency'].upper()
+                urgency_colored = f"{Colors.RED}{urgency}{Colors.RESET}" if urgency == 'HIGH' else urgency
+
+                print(f"[{status_colored}] #{incident_num} - {service_name} ({urgency_colored} urgency)")
+
+                # Title
+                print(f"  Title: {incident['title']}")
+
+                # Triggered time and duration
+                created_at = datetime.fromisoformat(incident['created_at'].replace('Z', '+00:00'))
+                duration, duration_color = format_duration(incident['created_at'])
+                print(f"  Triggered: {created_at.strftime('%b %d %H:%M')} ({duration_color}{duration} ago{Colors.RESET})")
+
+                # Assigned person
+                if incident.get('assignments') and len(incident['assignments']) > 0:
+                    assigned = incident['assignments'][0]['assignee']['summary']
+                    print(f"  Assigned: {assigned}")
+                else:
+                    print(f"  Assigned: {Colors.YELLOW}Unassigned{Colors.RESET}")
+
+                # Escalation info (if available in pending_actions)
+                if incident.get('pending_actions') and len(incident['pending_actions']) > 0:
+                    # Note: The actual structure of pending_actions may vary
+                    # This is a placeholder for escalation logic
+                    print(f"  {Colors.YELLOW}Escalation pending{Colors.RESET}")
+
+                # URL
+                if incident.get('html_url'):
+                    print(f"  URL: {incident['html_url']}")
+
+                print()
+
+        print()
+
+
+def main():
+    parser = argparse.ArgumentParser(description='Show PagerDuty incidents for team services')
+    parser.add_argument('--team', action='append', help='Filter to specific team(s)')
+    parser.add_argument('--service', action='append', help='Filter to specific service ID(s)')
+    parser.add_argument('--status', choices=['triggered', 'acknowledged', 'resolved'],
+                        help='Filter by incident status')
+    parser.add_argument('--days', type=int, default=1,
+                        help='Number of days to look back for resolved incidents (default: 1)')
+    parser.add_argument('--show-active', choices=['always', 'sometimes', 'never'], default='always',
+                        help='Show active incidents: always (default), sometimes (only if updated in date range), never')
+    parser.add_argument('--mode', choices=['table', 'detailed'], default='table',
+                        help='Display mode: table (default), detailed')
+    args = parser.parse_args()
+
+    # Load teams
+    teams = load_teams_config()
+
+    # Filter teams if requested
+    if args.team:
+        teams = {k: v for k, v in teams.items() if k in args.team}
+        if not teams:
+            print(f"Error: No teams found matching {args.team}", file=sys.stderr)
+            sys.exit(1)
+
+    # Get terminal width
+    try:
+        terminal_width = shutil.get_terminal_size().columns
+    except:
+        terminal_width = 120
+
+    # Calculate time range
+    now = datetime.now()
+    until = now.strftime('%Y-%m-%dT%H:%M:%SZ')
+    since = (now - timedelta(days=args.days)).strftime('%Y-%m-%dT%H:%M:%SZ')
+
+    # Determine which statuses to query
+    if args.status:
+        # User specified a single status
+        statuses_to_query = [args.status]
+        query_with_time = True
+    elif args.show_active == 'never':
+        # Only resolved
+        statuses_to_query = ['resolved']
+        query_with_time = True
+    elif args.show_active == 'always':
+        # Query active separately (no time filter) and resolved with time filter
+        # For simplicity, we'll query all and filter afterward
+        statuses_to_query = ['triggered', 'acknowledged', 'resolved']
+        query_with_time = False  # Will handle time filtering manually
+    else:  # sometimes
+        # Query all with time filter
+        statuses_to_query = ['triggered', 'acknowledged', 'resolved']
+        query_with_time = True
+
+    # Collect all incidents by team and service
+    team_incidents = {}
+
+    for team_key, team_info in teams.items():
+        service_ids = team_info['service_ids']
+
+        # Filter by service if specified
+        if args.service:
+            service_ids = [sid for sid in service_ids if sid in args.service]
+            if not service_ids:
+                continue
+
+        # Fetch incidents
+        if query_with_time:
+            incidents = get_incidents(service_ids, statuses_to_query, since=since, until=until)
+        else:
+            # Fetch active without time filter
+            active_incidents = get_incidents(service_ids, ['triggered', 'acknowledged'])
+            # Fetch resolved with time filter
+            resolved_incidents = get_incidents(service_ids, ['resolved'], since=since, until=until)
+            incidents = active_incidents + resolved_incidents
+
+        # Filter based on show-active logic if needed
+        if args.show_active == 'always' and not args.status:
+            # Keep all active, plus resolved from time range
+            # Already done by the query above
+            pass
+        elif args.show_active == 'sometimes':
+            # Filter to only incidents updated within time range
+            incidents = [inc for inc in incidents
+                        if datetime.fromisoformat(inc['updated_at'].replace('Z', '+00:00'))
+                        >= datetime.fromisoformat(since.replace('Z', '+00:00'))]
+
+        # Group by service
+        services_dict = {}
+        for incident in incidents:
+            service_id = incident['service']['id']
+            service_name = incident['service']['summary']
+
+            if service_name not in services_dict:
+                services_dict[service_name] = []
+            services_dict[service_name].append(incident)
+
+        if services_dict:
+            team_incidents[team_info['display_name']] = services_dict
+
+    # Render based on mode
+    if not team_incidents:
+        print("No incidents found matching the criteria.")
+        return
+
+    if args.mode == 'table':
+        render_table_mode(team_incidents, terminal_width)
+    else:
+        render_detailed_mode(team_incidents)
+
+
+if __name__ == '__main__':
+    main()

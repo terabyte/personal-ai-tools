@@ -6,10 +6,19 @@
 # sprint_name = current sprint name (optional - will auto-detect if not provided)
 # backlog_jql = JQL query for backlog items (optional - defaults to projects-based query)
 # display_name = Human readable team name
+# dfr_schedule_id = PagerDuty schedule ID for DFR rotation (optional - for dfr-dashboard)
+#   Find schedule IDs in PagerDuty schedules section
+# service_ids = comma-separated PagerDuty service IDs (optional - for incident-dashboard)
+#   Find service IDs in PagerDuty:
+#   1. Go to https://YOUR-COMPANY.pagerduty.com/service-directory
+#   2. Search for your service
+#   3. Copy the ID from the URL (e.g., PZ7ASGM from /service-directory/PZ7ASGM)
 
 [platform-team]
 display_name = Platform Engineering Team
 projects = PLAT,INFRA,TOOLS
+dfr_schedule_id = P1234AB  # Optional: PagerDuty schedule for DFR rotation
+service_ids = PABCDEF,PXYZ123  # Optional: PagerDuty services for incident monitoring
 
 [frontend-team]
 display_name = Frontend Team
