@@ -359,3 +359,13 @@ find-active-epics BACKEND --days 60
 # → PLAT-1234: Authentication Service Migration (updated 38d ago)
 ./epic-dashboard PLAT-1234
 ```
+
+# Dev Notes
+
+When developing features, make sure you test API endpoints before coding as
+they often do not work as expected. Jira has been around a long time and gone
+through many different revisions of their API and we operate against Jira Cloud
+which has some restrictions. Also sometimes permissions will foil us. In any
+case, if you test the APIs first directly to see how they work you will have
+better results.
+

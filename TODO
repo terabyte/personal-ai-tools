@@ -7,6 +7,7 @@
   - Transition to other states
   - Show sorted backlog
   - change order easily, send to top, send to bottom, etc.
+- When loading query, it says 100/100, then 200/100, then 300/100, etc. maybe get the count first? Re-think maximum, maybe command line arg to override
 # other
 - Handle story points forever
   - Create a field "total effort"
