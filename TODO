@@ -1,15 +1,13 @@
 # jira-view
 - If a change causes an issue to no longer be in the current query, it can cause a crash right now (index out of bounds). Ideally, if a change causes issues to be added they just show up and if they are removed maybe it still shows them but greyed out so you know they will disapear on next refresh. After a manually requested refresh, they can go away and if the selected issue disapears go back to the next issue in the list that is still present.
 - Press 'C' to convert current query to a list of tickets and if current query is just a list of tickets, creating new tickets adds them to the list. Also, you can add/remove tickets easily. Maybe it can do this with any query by adding "or ticket in (...)" to the end?
-# other
-- Handle story points forever
-  - Create a field "total effort"
-  - Write a script that populates this field if it is not already set
-# backlog-refinement tool
-- Make a TUI similar to jira-view but optimized for backlog triage.
+- When viewing an Epic type ticket, show all child tickets in the right bar. Maybe have a key to switch to viewing those in the left (automatically query "where parent = <current ticket>")
+- Backlog refinement mode
   - Enter story points easily
   - Transition to other states
   - Show sorted backlog
   - change order easily, send to top, send to bottom, etc.
-- Maybe should actually just be a mode for the existing TUI to change keybindings? View should look similar
-  - If orderby can sort correctly, then all we need to do is give the correct query and optimize keybindings/workflow for triage tasks
+# other
+- Handle story points forever
+  - Create a field "total effort"
+  - Write a script that populates this field if it is not already set
