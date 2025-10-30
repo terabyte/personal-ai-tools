@@ -3,16 +3,17 @@
 # Test script for personal-ai-tools
 #
 # Usage:
-#   ./test.sh                    # Deep check with coverage (fails if <65%)
+#   ./test.sh                    # Deep check with coverage (fails if <80%)
 #   ./test.sh quick              # Quick test without coverage
 #   ./test.sh long               # Verify no deadlocks (run tests 10x)
-#   COVERAGE_MIN=80 ./test.sh    # Set custom coverage threshold
+#   COVERAGE_MIN=90 ./test.sh    # Set custom coverage threshold
 #
 
 set -e  # Exit on error
 
 # Default coverage threshold (can be overridden with env var)
-COVERAGE_MIN="${COVERAGE_MIN:-65}"
+# Current coverage: 93%, so we set threshold at 80% to allow some wiggle room
+COVERAGE_MIN="${COVERAGE_MIN:-80}"
 
 # Colors for output
 RED='\033[0;31m'
@@ -109,10 +110,10 @@ case "$MODE" in
         log_error "Unknown mode: $MODE"
         echo
         echo "Usage:"
-        echo "  ./test.sh                    # Deep check with coverage (fails if <65%)"
+        echo "  ./test.sh                    # Deep check with coverage (fails if <80%)"
         echo "  ./test.sh quick              # Quick test without coverage"
         echo "  ./test.sh long               # Verify no deadlocks (run tests 10x)"
-        echo "  COVERAGE_MIN=80 ./test.sh    # Set custom coverage threshold"
+        echo "  COVERAGE_MIN=90 ./test.sh    # Set custom coverage threshold"
         exit 1
         ;;
 esac
