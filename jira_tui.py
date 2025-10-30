@@ -193,7 +193,7 @@ class JiraTUI:
             stdscr.addstr(0, 0, f"Fetching tickets: {fetched}/{total}...")
             stdscr.refresh()
 
-        tickets, single_ticket_mode = self._fetch_tickets(query_or_ticket, progress_callback)
+        tickets, single_ticket_mode = self._fetch_tickets(query_or_ticket, progress_callback, stdscr)
 
         if not tickets:
             stdscr.clear()
@@ -344,7 +344,7 @@ class JiraTUI:
                 current_ticket_key = tickets[selected_idx].get('key') if tickets and selected_idx < len(tickets) else None
 
                 # current_query is already modified in backlog mode (has ORDER BY Rank)
-                all_tickets, _ = self._fetch_tickets(current_query)
+                all_tickets, _ = self._fetch_tickets(current_query, stdscr=stdscr)
 
                 tickets = all_tickets
 
@@ -426,7 +426,7 @@ class JiraTUI:
                     current_query = self._add_rank_order_to_query(current_query)
 
                     # Re-fetch with rank ordering
-                    all_tickets, _ = self._fetch_tickets(current_query)
+                    all_tickets, _ = self._fetch_tickets(current_query, stdscr=stdscr)
                     tickets = all_tickets
                     # Find the same ticket in the new order
                     if current_key:
@@ -447,7 +447,7 @@ class JiraTUI:
                         self.original_query = None
 
                     # Re-fetch with original query (restores original order)
-                    all_tickets, _ = self._fetch_tickets(current_query)
+                    all_tickets, _ = self._fetch_tickets(current_query, stdscr=stdscr)
                     # Filter all_tickets to match current tickets (in case of search)
                     ticket_keys = {t.get('key') for t in tickets}
                     tickets = [t for t in all_tickets if t.get('key') in ticket_keys]
@@ -640,7 +640,7 @@ class JiraTUI:
                     stdscr.refresh()
 
                     try:
-                        tickets, single_ticket_mode = self._fetch_tickets(new_query)
+                        tickets, single_ticket_mode = self._fetch_tickets(new_query, stdscr=stdscr)
                         if tickets:
                             # Reset state
                             current_query = new_query
@@ -697,7 +697,7 @@ class JiraTUI:
                     stdscr.refresh()
 
                     try:
-                        tickets, single_ticket_mode = self._fetch_tickets(new_query)
+                        tickets, single_ticket_mode = self._fetch_tickets(new_query, stdscr=stdscr)
                         if tickets:
                             # Reset state
                             current_query = new_query
@@ -739,7 +739,7 @@ class JiraTUI:
                     stdscr.refresh()
 
                     try:
-                        tickets, single_ticket_mode = self._fetch_tickets(new_query)
+                        tickets, single_ticket_mode = self._fetch_tickets(new_query, stdscr=stdscr)
                         if tickets:
                             # Reset state
                             current_query = new_query
@@ -811,13 +811,14 @@ class JiraTUI:
             # No ORDER BY - add it
             return f"{query} ORDER BY Rank ASC"
 
-    def _fetch_tickets(self, query_or_ticket: str, progress_callback=None) -> tuple:
+    def _fetch_tickets(self, query_or_ticket: str, progress_callback=None, stdscr=None) -> tuple:
         """
         Fetch tickets from Jira.
 
         Args:
             query_or_ticket: Ticket key or JQL query
             progress_callback: Optional callback for progress updates
+            stdscr: Optional curses screen for count progress and interruption
 
         Returns:
             Tuple of (ticket_list, is_single_ticket)
@@ -841,7 +842,7 @@ class JiraTUI:
                 'parent', 'issuelinks', 'comment', 'resolution'
             ]
             issues = self.viewer.utils.fetch_all_jql_results(
-                query_or_ticket, fields, expand='changelog', progress_callback=progress_callback
+                query_or_ticket, fields, expand='changelog', progress_callback=progress_callback, stdscr=stdscr
             )
 
             # Apply consistent sorting

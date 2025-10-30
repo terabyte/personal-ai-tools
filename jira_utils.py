@@ -85,7 +85,7 @@ class JiraUtils:
             print(f"❌ Error calling Jira API: {e}", file=sys.stderr)
             return None
 
-    def get_jql_count(self, jql: str) -> int:
+    def get_jql_count(self, jql: str, stdscr=None) -> tuple:
         """Get the total count of results for a JQL query by fetching only keys.
 
         This makes a fast query fetching minimal data (just keys) to determine
@@ -93,16 +93,31 @@ class JiraUtils:
 
         Args:
             jql: JQL query string
+            stdscr: Optional curses screen for progress display and interruption
 
         Returns:
-            Total count of matching issues
+            Tuple of (count, interrupted) where interrupted is True if user pressed a key
         """
         jql_encoded = jql.replace(' ', '%20').replace('"', '%22')
         count = 0
         next_page_token = None
         max_results = 100
 
+        # Set up non-blocking input if we have a screen
+        if stdscr:
+            stdscr.nodelay(True)
+
         while True:
+            # Check for user interruption
+            if stdscr:
+                try:
+                    key = stdscr.getch()
+                    if key != -1:  # Key was pressed
+                        stdscr.nodelay(False)
+                        return (count, True)
+                except:
+                    pass
+
             # Build endpoint - fetch only 'key' field for speed
             if next_page_token:
                 endpoint = f"/search/jql?jql={jql_encoded}&fields=key&maxResults={max_results}&nextPageToken={next_page_token}"
@@ -121,13 +136,29 @@ class JiraUtils:
 
             count += len(issues)
 
+            # Update progress display
+            if stdscr:
+                stdscr.clear()
+                # Check if this is the last page
+                if not next_page_token:
+                    # Final count - no "+" sign
+                    stdscr.addstr(0, 0, f"Counting tickets: {count}")
+                else:
+                    # Still counting - show "+" and interrupt option
+                    stdscr.addstr(0, 0, f"Counting tickets: {count}+ (press any key to stop and fetch first {count})")
+                stdscr.refresh()
+
             # If no nextPageToken, we're on the last page
             if not next_page_token:
                 break
 
-        return count
+        # Restore blocking input
+        if stdscr:
+            stdscr.nodelay(False)
 
-    def fetch_all_jql_results(self, jql: str, fields: List[str], max_items: int = 1000, expand: Optional[str] = None, progress_callback=None, skip_count: bool = False) -> List[dict]:
+        return (count, False)
+
+    def fetch_all_jql_results(self, jql: str, fields: List[str], max_items: int = 1000, expand: Optional[str] = None, progress_callback=None, skip_count: bool = False, stdscr=None) -> List[dict]:
         """Fetch all results for a JQL query using proper nextPageToken pagination.
 
         Args:
@@ -137,6 +168,10 @@ class JiraUtils:
             expand: Optional expand parameter
             progress_callback: Optional callback function(fetched_count, total_count) called after each page
             skip_count: If True, skip the initial count query (default False)
+            stdscr: Optional curses screen for count progress and interruption
+
+        Returns:
+            List of issue dictionaries
         """
         jql_encoded = jql.replace(' ', '%20').replace('"', '%22')
         fields_str = ','.join(fields)
@@ -146,7 +181,10 @@ class JiraUtils:
 
         # Get total count first with a fast query (unless skipped)
         if not skip_count:
-            total_count = self.get_jql_count(jql)
+            total_count, interrupted = self.get_jql_count(jql, stdscr)
+            # If user interrupted counting, limit results to what we counted
+            if interrupted and total_count > 0:
+                max_items = total_count
         else:
             total_count = None
 
