@@ -2,6 +2,21 @@
 
 This repo contains tools I have built to enable me to use AI more easily in my daily workflows. They are mostly commands and scripts for having Claude interact with Jira, Confluence, Gitlab, and other things so I don't have to.
 
+## Testing
+
+This project now has comprehensive test coverage with a focus on thread safety and concurrency correctness.
+
+**Run tests:**
+```bash
+./test.sh           # Deep check with coverage (≥65%)
+./test.sh quick     # Fast tests without coverage (~5s)
+./test.sh long      # Verify no deadlocks (run 10x, ~50s)
+```
+
+**Current Status:** 22 tests, 100% pass rate, 65% coverage, <6s execution time
+
+See [TESTING_SUMMARY.md](TESTING_SUMMARY.md) for details.
+
 ## License
 
 This software is released into the public domain under the UNLICENSE. See the UNLICENSE file for details.
