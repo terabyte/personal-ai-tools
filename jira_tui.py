@@ -313,22 +313,15 @@ class JiraTUI:
                     # Reset detail scroll when changing tickets
                     self.detail_scroll_offset = 0
             elif ord('0') <= key <= ord('9'):  # Number prefix for vim-style movement
-                # Define callback to update input_buffer and redraw
+                # Define callback to update input_buffer and redraw ONLY status bar
                 def update_display(digits):
                     nonlocal input_buffer
                     input_buffer = digits
-                    # Redraw screen with updated input buffer
-                    stdscr.clear()
-                    self._draw_ticket_list(stdscr, tickets, selected_idx, scroll_offset,
-                                          height - 2, list_width, search_query,
-                                          self.original_query if self.backlog_mode and self.original_query else current_query)
-                    if tickets and selected_idx < len(tickets):
-                        current_ticket_key = tickets[selected_idx].get('key')
-                        self._draw_ticket_details(stdscr, current_ticket_key, detail_x,
-                                                 height - 2, detail_width)
+                    # Only redraw status bar for speed (avoid flashing)
                     self._draw_status_bar(stdscr, height - 1, width, selected_idx + 1,
                                          len(tickets), search_query, input_buffer)
-                    stdscr.refresh()
+                    stdscr.noutrefresh()
+                    curses.doupdate()
 
                 # Read the full number with display callback
                 count = self._read_number_from_key(stdscr, key, update_display)
@@ -347,14 +340,20 @@ class JiraTUI:
                 elif next_key == ord('k'):  # <count>k - move up
                     selected_idx, scroll_offset = self._handle_vim_navigation(
                         stdscr, tickets, selected_idx, scroll_offset, height, count, 'k')
-                elif next_key == ord('g'):  # <count>g - wait for second g
+                elif next_key == ord('g'):  # <count>g - wait for second char (j/k/g)
                     stdscr.nodelay(False)
-                    second_g = stdscr.getch()
+                    second_key = stdscr.getch()
                     stdscr.nodelay(True)
-                    if second_g == ord('g'):  # <count>gg - go to line number
+                    if second_key == ord('g'):  # <count>gg - go to line number
                         selected_idx, scroll_offset = self._handle_vim_navigation(
                             stdscr, tickets, selected_idx, scroll_offset, height, count, 'gg')
-                elif next_key == ord('G'):  # <count>G - go to line (same as gg in vim)
+                    elif second_key == ord('j'):  # <count>gj - move down (same as j)
+                        selected_idx, scroll_offset = self._handle_vim_navigation(
+                            stdscr, tickets, selected_idx, scroll_offset, height, count, 'j')
+                    elif second_key == ord('k'):  # <count>gk - move up (same as k)
+                        selected_idx, scroll_offset = self._handle_vim_navigation(
+                            stdscr, tickets, selected_idx, scroll_offset, height, count, 'k')
+                elif next_key == ord('G'):  # <count>G - go to line (immediate, no second key)
                     selected_idx, scroll_offset = self._handle_vim_navigation(
                         stdscr, tickets, selected_idx, scroll_offset, height, count, 'G')
             elif key == 10:  # Ctrl+J or Enter - Scroll detail pane down
