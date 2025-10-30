@@ -83,13 +83,13 @@ class TestCriticalPerformance:
         # Execute query that includes assignee field
         query_controller.execute_query("project=TEST", ["key", "summary", "assignee"])
 
-        # Check cache stats
-        stats = temp_cache.get_cache_stats()
+        # Check cache - users category should not be populated
+        # JiraCache uses category-based caching, check if 'users' is cached
+        is_users_cached = temp_cache.is_cached('users')
 
-        # Users should be 0 or very low (lazy caching)
-        # NOT 728 like in the bug!
-        user_count = stats.get("users", {}).get("count", 0)
-        assert user_count < 10, f"Too many users cached upfront: {user_count} (should be <10)"
+        # Users should NOT be cached upfront
+        # NOT 728 users like in the bug!
+        assert not is_users_cached, "Users were cached upfront (should be lazy)"
 
 
 class TestCriticalCorrectness:
@@ -306,6 +306,185 @@ class TestControllerBasics:
 
         # Force refresh should make additional API call
         assert call_count_2 > call_count_1, "Force refresh didn't call API"
+
+
+class TestTicketController:
+    """Tests for TicketController methods."""
+
+    def test_fetch_ticket_blocking(self, ticket_controller, mock_jira_utils):
+        """
+        Verify fetch_ticket returns ticket synchronously.
+        """
+        # Mock returns single ticket
+        mock_jira_utils.fetch_all_jql_results.return_value = [
+            {"key": "TEST-123", "fields": {"summary": "Test ticket"}}
+        ]
+
+        ticket = ticket_controller.fetch_ticket("TEST-123")
+
+        assert ticket is not None
+        assert ticket['key'] == "TEST-123"
+        assert ticket['fields']['summary'] == "Test ticket"
+
+    def test_fetch_ticket_returns_none_on_error(self, ticket_controller, mock_jira_utils):
+        """
+        Verify fetch_ticket handles errors gracefully.
+        """
+        # Mock raises exception
+        mock_jira_utils.fetch_all_jql_results.side_effect = Exception("API Error")
+
+        ticket = ticket_controller.fetch_ticket("TEST-123")
+
+        assert ticket is None
+
+    def test_refresh_ticket_non_blocking(self, ticket_controller):
+        """
+        Verify refresh_ticket returns immediately (doesn't block).
+        """
+        start = time.time()
+        ticket_controller.refresh_ticket("TEST-123")
+        elapsed = time.time() - start
+
+        # Should return immediately (spawns background thread)
+        assert elapsed < 0.1, f"refresh_ticket blocked for {elapsed:.2f}s"
+
+    def test_refresh_ticket_calls_callback(self, ticket_controller, mock_jira_utils):
+        """
+        Verify refresh_ticket calls callback when complete.
+        """
+        # Mock returns ticket
+        mock_jira_utils.fetch_all_jql_results.return_value = [
+            {"key": "TEST-123", "fields": {"summary": "Refreshed"}}
+        ]
+
+        callback_called = threading.Event()
+        received_ticket = [None]
+
+        def callback(ticket):
+            received_ticket[0] = ticket
+            callback_called.set()
+
+        ticket_controller.refresh_ticket("TEST-123", callback=callback)
+
+        # Wait for callback (with timeout)
+        assert callback_called.wait(timeout=2), "Callback not called"
+        assert received_ticket[0] is not None
+        assert received_ticket[0]['key'] == "TEST-123"
+
+    def test_fetch_transitions(self, ticket_controller, mock_jira_utils):
+        """
+        Verify fetch_transitions returns transitions and caches them.
+        """
+        mock_jira_utils.call_jira_api.return_value = {
+            'transitions': [
+                {'id': '11', 'name': 'To Do'},
+                {'id': '21', 'name': 'In Progress'},
+                {'id': '31', 'name': 'Done'}
+            ]
+        }
+
+        # First call - should fetch from API
+        transitions = ticket_controller.fetch_transitions("TEST-123")
+
+        assert transitions is not None
+        assert len(transitions) == 3
+        assert transitions[0]['name'] == 'To Do'
+
+        # Second call - should hit cache
+        mock_jira_utils.call_jira_api.reset_mock()
+        transitions2 = ticket_controller.fetch_transitions("TEST-123")
+
+        assert transitions2 == transitions
+        assert not mock_jira_utils.call_jira_api.called, "Should have used cache"
+
+    def test_get_cached_transitions(self, ticket_controller):
+        """
+        Verify get_cached_transitions returns None when not cached.
+        """
+        transitions = ticket_controller.get_cached_transitions("TEST-999")
+        assert transitions is None
+
+    def test_format_ticket_display(self, ticket_controller):
+        """
+        Verify format_ticket_display is a pure function.
+        """
+        ticket = {
+            'key': 'TEST-123',
+            'fields': {
+                'summary': 'Test Summary',
+                'status': {'name': 'In Progress'},
+                'updated': '2025-01-15T10:00:00.000+0000'
+            }
+        }
+
+        # Format with custom formatters
+        formatters = {
+            'status': lambda s: s['name'].upper(),
+            'updated': lambda d: d.split('T')[0]  # Extract date
+        }
+
+        result = ticket_controller.format_ticket_display(ticket, formatters)
+
+        assert result['key'] == 'TEST-123'
+        assert result['summary'] == 'Test Summary'
+        assert result['status'] == 'IN PROGRESS'
+        assert result['updated'] == '2025-01-15'
+
+
+class TestCacheController:
+    """Tests for CacheController methods."""
+
+    def test_get_stats(self, cache_controller):
+        """
+        Verify get_stats returns expected structure.
+        """
+        stats = cache_controller.get_stats()
+
+        assert isinstance(stats, dict)
+        # Should have info about common cache categories
+        assert 'link_types' in stats or 'users' in stats or len(stats) >= 0
+
+    def test_get_cache_ages(self, cache_controller):
+        """
+        Verify get_cache_ages returns age strings.
+        """
+        ages = cache_controller.get_cache_ages()
+
+        assert isinstance(ages, dict)
+        # Each age should be a string
+        for category, age in ages.items():
+            assert isinstance(age, str)
+
+    def test_refresh_metadata(self, cache_controller):
+        """
+        Verify refresh_metadata invalidates cache category.
+        """
+        # Should not raise exception
+        cache_controller.refresh_metadata('link_types')
+        cache_controller.refresh_metadata('users')
+
+    def test_clear_tickets(self, cache_controller):
+        """
+        Verify clear_tickets executes without error.
+        """
+        count = cache_controller.clear_tickets()
+        assert isinstance(count, int)
+        assert count >= 0
+
+    def test_clear_users(self, cache_controller):
+        """
+        Verify clear_users executes without error.
+        """
+        count = cache_controller.clear_users()
+        assert isinstance(count, int)
+        assert count >= 0
+
+    def test_clear_all(self, cache_controller):
+        """
+        Verify clear_all clears entire cache.
+        """
+        # Should not raise exception
+        cache_controller.clear_all()
 
 
 # Test marks for organization

@@ -104,12 +104,15 @@ def temp_cache(tmp_path):
     Returns:
         JiraCache: Temporary cache instance
     """
-    # Import will work once jira_cache exists
-    # from jira_cache import JiraCache
+    # Import real JiraCache
+    from jira_cache import JiraCache
 
-    # For now, return a mock
-    cache = MagicMock()
-    cache.get_cache_stats.return_value = {"users": {"count": 0}, "tickets": {"count": 0}}
+    # Create temporary cache in test directory
+    cache = JiraCache("https://test.atlassian.net")
+    # Override cache directory to use temp path
+    cache.cache_dir = tmp_path
+    cache.cache_file = tmp_path / 'cache.json'
+    cache.cache = {}
 
     yield cache
     # Cleanup handled by tmp_path fixture

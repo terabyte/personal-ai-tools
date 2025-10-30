@@ -318,15 +318,18 @@ class TicketController:
     Handles operations on individual tickets.
 
     This controller provides operations on single tickets, such as refreshing
-    a specific ticket from the API or formatting ticket data for display.
+    a specific ticket from the API, fetching transitions, and formatting
+    ticket data for display.
 
     Thread Safety:
     - refresh_ticket(): Spawns background thread, safe to call concurrently
     - get_cached_ticket(): Thread-safe via cache layer
+    - fetch_transitions(): API call, thread-safe
     - format_ticket_display(): Pure function, no shared state
+    - All methods can be called concurrently
 
     Design:
-    - Minimal shared state (delegates to cache)
+    - Minimal shared state (delegates to cache and utils)
     - Background threads for I/O operations
     - Pure functions for formatting (no side effects)
     """
@@ -339,11 +342,13 @@ class TicketController:
             utils: JiraUtils instance (handles API calls and caching)
         """
         self.utils = utils
+        self.transitions_cache: Dict[str, List[dict]] = {}
+        self.transitions_lock = threading.Lock()
 
     def refresh_ticket(
         self,
         ticket_key: str,
-        callback: Optional[Callable[[dict], None]] = None
+        callback: Optional[Callable[[Optional[dict]], None]] = None
     ) -> None:
         """
         Force refresh single ticket from API in background.
@@ -356,12 +361,12 @@ class TicketController:
 
         Args:
             ticket_key: Ticket key (e.g., "PROJ-123")
-            callback: Called when refresh complete with updated ticket dict
+            callback: Called when refresh complete with updated ticket dict (or None on error)
 
         Examples:
             >>> controller.refresh_ticket(
             ...     "TEST-123",
-            ...     callback=lambda t: print(f"Refreshed: {t['key']}")
+            ...     callback=lambda t: print(f"Refreshed: {t['key']}" if t else "Failed")
             ... )
             >>> # Returns immediately, callback called when complete
         """
@@ -369,46 +374,106 @@ class TicketController:
             try:
                 # Fetch from API (NO LOCK, this is I/O)
                 jql = f"key = {ticket_key}"
-                tickets = self.utils.fetch_all_jql_results(jql, ["*"])
+                tickets = self.utils.fetch_all_jql_results(jql, ["*all"])
 
-                if tickets:
-                    ticket = tickets[0]
-                    # Update cache
-                    if hasattr(self.utils, 'cache'):
-                        # Cache update is thread-safe via cache layer
-                        pass  # Will be implemented with cache.set_ticket()
+                ticket = tickets[0] if tickets else None
 
-                    # Call callback if provided
-                    if callback:
-                        callback(ticket)
+                # Call callback if provided
+                if callback:
+                    callback(ticket)
             except Exception as e:
                 print(f"Error refreshing ticket {ticket_key}: {e}")
+                if callback:
+                    callback(None)
 
         # Spawn daemon thread
         thread = threading.Thread(target=background_refresh, daemon=True)
         thread.start()
 
-    def get_cached_ticket(self, ticket_key: str) -> Optional[dict]:
+    def fetch_ticket(self, ticket_key: str) -> Optional[dict]:
         """
-        Get ticket from cache only (no API call).
+        Fetch single ticket from API (blocking).
 
-        Thread Safety: Thread-safe via cache layer.
+        Use this for synchronous operations where you need the result immediately.
+        For non-blocking refresh, use refresh_ticket() instead.
+
+        Thread Safety: Safe to call from any thread. Blocking I/O operation.
 
         Args:
             ticket_key: Ticket key (e.g., "PROJ-123")
 
         Returns:
-            Ticket dict if cached, None otherwise
+            Ticket dict or None on error
 
         Examples:
-            >>> ticket = controller.get_cached_ticket("TEST-123")
+            >>> ticket = controller.fetch_ticket("TEST-123")
             >>> if ticket:
-            ...     print(f"Found in cache: {ticket['fields']['summary']}")
+            ...     print(ticket['fields']['summary'])
         """
-        if hasattr(self.utils, 'cache'):
-            # Will be implemented with cache.get_ticket()
-            pass
-        return None
+        try:
+            jql = f"key = {ticket_key}"
+            tickets = self.utils.fetch_all_jql_results(jql, ["*all"])
+            return tickets[0] if tickets else None
+        except Exception as e:
+            print(f"Error fetching ticket {ticket_key}: {e}")
+            return None
+
+    def fetch_transitions(self, ticket_key: str) -> Optional[List[dict]]:
+        """
+        Fetch available status transitions for a ticket.
+
+        Thread Safety: Safe to call concurrently. Results are cached.
+
+        Args:
+            ticket_key: Ticket key (e.g., "PROJ-123")
+
+        Returns:
+            List of transition dicts with 'id' and 'name', or None on error
+
+        Examples:
+            >>> transitions = controller.fetch_transitions("TEST-123")
+            >>> for t in transitions:
+            ...     print(f"{t['name']} (id: {t['id']})")
+        """
+        # Check cache first
+        with self.transitions_lock:
+            if ticket_key in self.transitions_cache:
+                return self.transitions_cache[ticket_key]
+
+        # Fetch from API (NO LOCK during I/O)
+        try:
+            endpoint = f"/issue/{ticket_key}/transitions"
+            response = self.utils.call_jira_api(endpoint)
+
+            if not response:
+                return None
+
+            transitions = response.get('transitions', [])
+
+            # Cache result
+            with self.transitions_lock:
+                self.transitions_cache[ticket_key] = transitions
+
+            return transitions
+
+        except Exception as e:
+            print(f"Error fetching transitions for {ticket_key}: {e}")
+            return None
+
+    def get_cached_transitions(self, ticket_key: str) -> Optional[List[dict]]:
+        """
+        Get cached transitions without API call.
+
+        Thread Safety: Thread-safe via lock.
+
+        Args:
+            ticket_key: Ticket key
+
+        Returns:
+            Cached transitions or None
+        """
+        with self.transitions_lock:
+            return self.transitions_cache.get(ticket_key)
 
     def format_ticket_display(
         self,
@@ -469,13 +534,14 @@ class CacheController:
 
     Thread Safety:
     - get_stats(): Thread-safe via cache layer
-    - refresh_all_tickets(): Spawns background thread, checks for existing refresh
+    - get_cache_ages(): Thread-safe via cache layer
+    - refresh_metadata(): Safe, invalidates TTL cache
     - clear_*(): Atomic operations via cache layer
 
     Design:
     - Delegates to cache layer for thread-safe operations
-    - Background threads for bulk refresh operations
-    - Lock protects refresh_thread to prevent duplicate refreshes
+    - Simple operations (no background threads needed yet)
+    - Lock not needed (cache layer handles thread safety)
     """
 
     def __init__(self, cache):
@@ -483,138 +549,134 @@ class CacheController:
         Initialize CacheController.
 
         Args:
-            cache: Cache instance (JiraCache or JiraSQLiteCache)
+            cache: Cache instance (JiraCache)
         """
         self.cache = cache
-        self.refresh_thread: Optional[threading.Thread] = None
-        self.refresh_lock = threading.Lock()  # Protects refresh_thread only
-        self.is_refreshing = False  # Atomic flag
 
     def get_stats(self) -> Dict[str, Any]:
         """
         Get cache statistics for display.
 
+        For JiraCache (current implementation), provides:
+        - Categories cached (link_types, users, issue_types, etc.)
+        - Age of each category
+        - Whether each category is cached
+
         Thread Safety: Thread-safe via cache layer.
 
         Returns:
-            Dict with cache statistics:
-                - tickets: {count, oldest_age, size_mb}
-                - users: {count, oldest_age, size_mb}
-                - total_size_mb: Total cache size
+            Dict with cache statistics
 
         Examples:
             >>> stats = controller.get_stats()
-            >>> print(f"Cached tickets: {stats['tickets']['count']}")
-            >>> print(f"Cache size: {stats['total_size_mb']:.1f} MB")
+            >>> for category, info in stats.items():
+            ...     print(f"{category}: {info}")
         """
-        if hasattr(self.cache, 'get_cache_stats'):
-            return self.cache.get_cache_stats()
+        # JiraCache doesn't have get_cache_stats, so build it manually
+        stats = {}
 
-        # Fallback for caches without stats
-        return {
-            'tickets': {'count': 0, 'oldest_age': None, 'size_mb': 0},
-            'users': {'count': 0, 'oldest_age': None, 'size_mb': 0},
-            'total_size_mb': 0
-        }
+        # Common cache categories
+        categories = ['link_types', 'users', 'issue_types']
 
-    def refresh_all_tickets(
-        self,
-        progress_callback: Optional[Callable[[int, int], None]] = None
-    ) -> bool:
+        for category in categories:
+            is_cached = self.cache.is_cached(category)
+            age = self.cache.get_age(category) if is_cached else None
+
+            stats[category] = {
+                'cached': is_cached,
+                'age': age
+            }
+
+        return stats
+
+    def get_cache_ages(self) -> Dict[str, str]:
         """
-        Spawn background thread to refresh all cached tickets.
+        Get human-readable ages for all cache categories.
 
-        Returns immediately. Use progress_callback for updates.
-
-        Thread Safety: Safe to call concurrently. Only one refresh runs at a time.
-        Returns False if refresh already in progress.
-
-        Args:
-            progress_callback: Optional callback(current, total) for progress
+        Thread Safety: Thread-safe via cache layer.
 
         Returns:
-            True if refresh started, False if already in progress
+            Dict mapping category name to age string (e.g., "2h ago")
 
         Examples:
-            >>> def on_progress(current, total):
-            ...     print(f"Refreshing: {current}/{total}")
-            >>> if controller.refresh_all_tickets(on_progress):
-            ...     print("Refresh started")
-            ... else:
-            ...     print("Refresh already in progress")
+            >>> ages = controller.get_cache_ages()
+            >>> print(f"Link types cached {ages.get('link_types', 'never')}")
         """
-        with self.refresh_lock:
-            if self.is_refreshing:
-                return False  # Already refreshing
+        ages = {}
 
-            self.is_refreshing = True
+        categories = ['link_types', 'users', 'issue_types']
+        for category in categories:
+            ages[category] = self.cache.get_age(category)
 
-        def background_refresh():
-            try:
-                # Refresh logic will be implemented
-                # For now, just sleep to simulate work
-                if progress_callback:
-                    progress_callback(0, 100)
-                time.sleep(0.1)
-                if progress_callback:
-                    progress_callback(100, 100)
-            finally:
-                self.is_refreshing = False
+        return ages
 
-        self.refresh_thread = threading.Thread(
-            target=background_refresh,
-            daemon=True
-        )
-        self.refresh_thread.start()
-        return True
+    def refresh_metadata(self, category: str) -> None:
+        """
+        Refresh metadata cache category.
+
+        Invalidates the cache for the given category, forcing
+        next access to fetch fresh data from API.
+
+        Thread Safety: Thread-safe via cache layer.
+
+        Args:
+            category: Category to refresh (e.g., 'link_types', 'users')
+
+        Examples:
+            >>> controller.refresh_metadata('link_types')
+            >>> # Next call to get_link_types() will fetch from API
+        """
+        self.cache.invalidate(category)
 
     def clear_tickets(self) -> int:
         """
         Clear ticket cache.
 
-        Thread Safety: Atomic operation via cache layer.
+        Note: Current JiraCache implementation doesn't separate tickets from
+        other cached data. This clears all cache. Future SQLite implementation
+        will support selective clearing.
+
+        Thread Safety: Thread-safe via cache layer.
 
         Returns:
-            Number of tickets cleared
+            Number of items cleared (0 for current implementation)
 
         Examples:
             >>> count = controller.clear_tickets()
-            >>> print(f"Cleared {count} tickets from cache")
+            >>> print(f"Cleared {count} tickets")
         """
-        if hasattr(self.cache, 'clear_tickets'):
-            return self.cache.clear_tickets()
-        return 0
+        # JiraCache doesn't have separate ticket cache
+        # This is a placeholder for future SQLite cache
+        self.cache.clear_all()
+        return 0  # Can't count what was cleared with current cache
 
     def clear_users(self) -> int:
         """
         Clear user cache.
 
-        Thread Safety: Atomic operation via cache layer.
+        Note: Current JiraCache caches users in 'users' category.
+        This invalidates that category.
+
+        Thread Safety: Thread-safe via cache layer.
 
         Returns:
-            Number of users cleared
+            Number of users cleared (0 for current implementation)
 
         Examples:
             >>> count = controller.clear_users()
-            >>> print(f"Cleared {count} users from cache")
+            >>> print(f"Cleared {count} users")
         """
-        if hasattr(self.cache, 'clear_users'):
-            return self.cache.clear_users()
-        return 0
+        self.cache.invalidate('users')
+        return 0  # Can't count what was cleared
 
-    def clear_all(self) -> Tuple[int, int]:
+    def clear_all(self) -> None:
         """
-        Clear entire cache (tickets + users + metadata).
+        Clear entire cache.
 
-        Thread Safety: Atomic operation via cache layer.
-
-        Returns:
-            Tuple of (tickets_cleared, users_cleared)
+        Thread Safety: Thread-safe via cache layer.
 
         Examples:
-            >>> tickets, users = controller.clear_all()
-            >>> print(f"Cleared {tickets} tickets and {users} users")
+            >>> controller.clear_all()
+            >>> print("Cache cleared")
         """
-        tickets_cleared = self.clear_tickets()
-        users_cleared = self.clear_users()
-        return (tickets_cleared, users_cleared)
+        self.cache.clear_all()

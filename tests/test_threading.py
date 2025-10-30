@@ -130,19 +130,19 @@ class TestCacheLayerConcurrency:
         """
         Verify cache handles concurrent reads/writes.
 
-        Note: This test currently uses a mock cache. When real SQLite
-        cache is implemented, this will test actual concurrent DB access.
+        Tests concurrent access to JiraCache (file-based) operations.
+        Future SQLite cache will have more rigorous concurrent access patterns.
         """
-        # With mock cache, just verify it's thread-safe to call
         errors = []
 
         def cache_operations():
             """Perform cache operations"""
             try:
-                for _ in range(10):
-                    # These are mock operations, but test the interface
-                    stats = temp_cache.get_cache_stats()
-                    assert stats is not None
+                for i in range(10):
+                    # Test read/write operations
+                    temp_cache.set('test_category', f'data_{i}', ttl=3600)
+                    data = temp_cache.get('test_category')
+                    assert data is not None or i == 0  # First may be None
             except Exception as e:
                 errors.append(e)
 
