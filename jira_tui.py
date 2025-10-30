@@ -323,16 +323,18 @@ class JiraTUI:
                     stdscr.noutrefresh()
                     curses.doupdate()
 
-                # Read the full number with display callback
-                count = self._read_number_from_key(stdscr, key, update_display)
+                # Read the full number with display callback - returns (count, terminating_key)
+                count, next_key = self._read_number_from_key(stdscr, key, update_display)
 
                 # Clear input buffer after reading
                 input_buffer = ""
 
-                # Wait for next command: j, k, g, or G
-                stdscr.nodelay(False)
-                next_key = stdscr.getch()
-                stdscr.nodelay(True)
+                # If we got a terminating key (not timeout), process it
+                if next_key == -1:
+                    # Timeout - wait for command key
+                    stdscr.nodelay(False)
+                    next_key = stdscr.getch()
+                    stdscr.nodelay(True)
 
                 if next_key == ord('j'):  # <count>j - move down
                     selected_idx, scroll_offset = self._handle_vim_navigation(
@@ -519,7 +521,7 @@ class JiraTUI:
                         current_query, 'top', 0, height, width
                     )
                 elif ord('1') <= next_key <= ord('9'):  # mN = up N
-                    count = self._read_number_from_key(stdscr, next_key)
+                    count, _ = self._read_number_from_key(stdscr, next_key)
                     tickets, selected_idx, scroll_offset = self._handle_backlog_move(
                         stdscr, tickets, all_tickets, selected_idx, scroll_offset,
                         current_query, 'up', count, height, width
@@ -536,7 +538,7 @@ class JiraTUI:
                         current_query, 'bottom', 0, height, width
                     )
                 elif ord('1') <= next_key <= ord('9'):  # MN = down N
-                    count = self._read_number_from_key(stdscr, next_key)
+                    count, _ = self._read_number_from_key(stdscr, next_key)
                     tickets, selected_idx, scroll_offset = self._handle_backlog_move(
                         stdscr, tickets, all_tickets, selected_idx, scroll_offset,
                         current_query, 'down', count, height, width
@@ -2898,7 +2900,7 @@ class JiraTUI:
 
         return (selected_idx, scroll_offset)
 
-    def _read_number_from_key(self, stdscr, first_key: int, display_callback=None) -> int:
+    def _read_number_from_key(self, stdscr, first_key: int, display_callback=None) -> tuple:
         """Read a multi-digit number starting with first_key.
 
         Args:
@@ -2907,9 +2909,11 @@ class JiraTUI:
             display_callback: Optional callback(digits_str) to update display while typing
 
         Returns:
-            The parsed number, or 0 if no valid number
+            Tuple of (number, terminating_key) where terminating_key is the non-digit
+            key that ended the sequence, or -1 if timeout
         """
         digits = [chr(first_key)]
+        terminating_key = -1
 
         # Show initial digit
         if display_callback:
@@ -2921,12 +2925,16 @@ class JiraTUI:
         while True:
             try:
                 next_key = stdscr.getch()
-                if ord('0') <= next_key <= ord('9'):
+                if next_key == -1:
+                    # Timeout - no more digits
+                    break
+                elif ord('0') <= next_key <= ord('9'):
                     digits.append(chr(next_key))
                     if display_callback:
                         display_callback(''.join(digits))
                 else:
-                    # Not a digit, push it back (by not consuming it)
+                    # Not a digit - this is the command key
+                    terminating_key = next_key
                     break
             except:
                 break
@@ -2934,9 +2942,11 @@ class JiraTUI:
         stdscr.timeout(-1)  # Reset to blocking
 
         try:
-            return int(''.join(digits))
+            count = int(''.join(digits))
         except ValueError:
-            return 0  # Default to 0 if parse fails
+            count = 0
+
+        return (count, terminating_key)
 
     def _handle_backlog_move(self, stdscr, tickets: List[dict], all_tickets: List[dict],
                             selected_idx: int, scroll_offset: int, current_query: str,
