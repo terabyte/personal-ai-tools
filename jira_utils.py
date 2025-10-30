@@ -85,7 +85,49 @@ class JiraUtils:
             print(f"❌ Error calling Jira API: {e}", file=sys.stderr)
             return None
 
-    def fetch_all_jql_results(self, jql: str, fields: List[str], max_items: int = 1000, expand: Optional[str] = None, progress_callback=None) -> List[dict]:
+    def get_jql_count(self, jql: str) -> int:
+        """Get the total count of results for a JQL query by fetching only keys.
+
+        This makes a fast query fetching minimal data (just keys) to determine
+        the total count before fetching full results.
+
+        Args:
+            jql: JQL query string
+
+        Returns:
+            Total count of matching issues
+        """
+        jql_encoded = jql.replace(' ', '%20').replace('"', '%22')
+        count = 0
+        next_page_token = None
+        max_results = 100
+
+        while True:
+            # Build endpoint - fetch only 'key' field for speed
+            if next_page_token:
+                endpoint = f"/search/jql?jql={jql_encoded}&fields=key&maxResults={max_results}&nextPageToken={next_page_token}"
+            else:
+                endpoint = f"/search/jql?jql={jql_encoded}&fields=key&maxResults={max_results}"
+
+            response = self.call_jira_api(endpoint)
+            if not response:
+                break
+
+            issues = response.get('issues', [])
+            next_page_token = response.get('nextPageToken')
+
+            if not issues:
+                break
+
+            count += len(issues)
+
+            # If no nextPageToken, we're on the last page
+            if not next_page_token:
+                break
+
+        return count
+
+    def fetch_all_jql_results(self, jql: str, fields: List[str], max_items: int = 1000, expand: Optional[str] = None, progress_callback=None, skip_count: bool = False) -> List[dict]:
         """Fetch all results for a JQL query using proper nextPageToken pagination.
 
         Args:
@@ -94,13 +136,19 @@ class JiraUtils:
             max_items: Maximum number of items to fetch (default 1000)
             expand: Optional expand parameter
             progress_callback: Optional callback function(fetched_count, total_count) called after each page
+            skip_count: If True, skip the initial count query (default False)
         """
         jql_encoded = jql.replace(' ', '%20').replace('"', '%22')
         fields_str = ','.join(fields)
         all_issues = []
         next_page_token = None
         max_results = 100
-        total_count = None  # Will be populated from first response
+
+        # Get total count first with a fast query (unless skipped)
+        if not skip_count:
+            total_count = self.get_jql_count(jql)
+        else:
+            total_count = None
 
         while True:
             # Build endpoint with nextPageToken if we have one
@@ -120,10 +168,6 @@ class JiraUtils:
             issues = response.get('issues', [])
             next_page_token = response.get('nextPageToken')
 
-            # Get total count from first response
-            if total_count is None:
-                total_count = response.get('total', len(issues))
-
             # If no issues returned, we're done
             if not issues:
                 break
@@ -131,7 +175,7 @@ class JiraUtils:
             all_issues.extend(issues)
 
             # Call progress callback if provided
-            if progress_callback:
+            if progress_callback and total_count is not None:
                 progress_callback(len(all_issues), total_count)
 
             # If no nextPageToken, we're on the last page

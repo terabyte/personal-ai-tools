@@ -184,7 +184,7 @@ class JiraTUI:
             curses.init_pair(7, curses.COLOR_WHITE, -1)    # White/bright
 
         # Fetch tickets with progress display
-        stdscr.addstr(0, 0, "Fetching tickets...")
+        stdscr.addstr(0, 0, "Counting tickets...")
         stdscr.refresh()
 
         def progress_callback(fetched, total):
