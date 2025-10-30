@@ -246,12 +246,14 @@ class JiraTUI:
             # Get terminal dimensions
             height, width = stdscr.getmaxyx()
 
-            # Clear screen
-            stdscr.clear()
+            # Use erase() instead of clear() - doesn't flash as much
+            stdscr.erase()
 
             # Show help overlay if requested
             if show_help:
                 self._draw_help(stdscr, height, width)
+                stdscr.noutrefresh()
+                curses.doupdate()
                 key = stdscr.getch()
                 if key != -1:  # Any key dismisses help
                     show_help = False
@@ -285,7 +287,9 @@ class JiraTUI:
             self._draw_status_bar(stdscr, height - 1, width, selected_idx + 1,
                                  len(tickets), search_query, input_buffer)
 
-            stdscr.refresh()
+            # Use noutrefresh() + doupdate() for atomic update (no flashing)
+            stdscr.noutrefresh()
+            curses.doupdate()
 
             # Handle input
             key = stdscr.getch()
