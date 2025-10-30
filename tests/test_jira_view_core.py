@@ -451,9 +451,9 @@ class TestCacheController:
         ages = cache_controller.get_cache_ages()
 
         assert isinstance(ages, dict)
-        # Each age should be a string
+        # Each age should be a string or None (if not cached)
         for category, age in ages.items():
-            assert isinstance(age, str)
+            assert age is None or isinstance(age, str)
 
     def test_refresh_metadata(self, cache_controller):
         """

@@ -572,22 +572,8 @@ class CacheController:
             >>> for category, info in stats.items():
             ...     print(f"{category}: {info}")
         """
-        # JiraCache doesn't have get_cache_stats, so build it manually
-        stats = {}
-
-        # Common cache categories
-        categories = ['link_types', 'users', 'issue_types']
-
-        for category in categories:
-            is_cached = self.cache.is_cached(category)
-            age = self.cache.get_age(category) if is_cached else None
-
-            stats[category] = {
-                'cached': is_cached,
-                'age': age
-            }
-
-        return stats
+        # Use SQLite cache's built-in stats method
+        return self.cache.get_cache_stats()
 
     def get_cache_ages(self) -> Dict[str, str]:
         """
@@ -632,42 +618,31 @@ class CacheController:
         """
         Clear ticket cache.
 
-        Note: Current JiraCache implementation doesn't separate tickets from
-        other cached data. This clears all cache. Future SQLite implementation
-        will support selective clearing.
-
         Thread Safety: Thread-safe via cache layer.
 
         Returns:
-            Number of items cleared (0 for current implementation)
+            Number of tickets cleared
 
         Examples:
             >>> count = controller.clear_tickets()
             >>> print(f"Cleared {count} tickets")
         """
-        # JiraCache doesn't have separate ticket cache
-        # This is a placeholder for future SQLite cache
-        self.cache.clear_all()
-        return 0  # Can't count what was cleared with current cache
+        return self.cache.clear_tickets()
 
     def clear_users(self) -> int:
         """
         Clear user cache.
 
-        Note: Current JiraCache caches users in 'users' category.
-        This invalidates that category.
-
         Thread Safety: Thread-safe via cache layer.
 
         Returns:
-            Number of users cleared (0 for current implementation)
+            Number of users cleared
 
         Examples:
             >>> count = controller.clear_users()
             >>> print(f"Cleared {count} users")
         """
-        self.cache.invalidate('users')
-        return 0  # Can't count what was cleared
+        return self.cache.clear_users()
 
     def clear_all(self) -> None:
         """

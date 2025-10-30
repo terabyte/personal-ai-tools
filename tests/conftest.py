@@ -102,17 +102,13 @@ def temp_cache(tmp_path):
         tmp_path: pytest's temporary directory fixture
 
     Returns:
-        JiraCache: Temporary cache instance
+        JiraSQLiteCache: Temporary cache instance
     """
-    # Import real JiraCache
-    from jira_cache import JiraCache
+    # Import real SQLite cache
+    from jira_sqlite_cache import JiraSQLiteCache
 
     # Create temporary cache in test directory
-    cache = JiraCache("https://test.atlassian.net")
-    # Override cache directory to use temp path
-    cache.cache_dir = tmp_path
-    cache.cache_file = tmp_path / 'cache.json'
-    cache.cache = {}
+    cache = JiraSQLiteCache("https://test.atlassian.net", cache_dir=tmp_path)
 
     yield cache
     # Cleanup handled by tmp_path fixture

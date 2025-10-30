@@ -14,7 +14,7 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from jira_cache import JiraCache
+from jira_sqlite_cache import JiraSQLiteCache
 
 
 class JiraUtils:
@@ -26,10 +26,7 @@ class JiraUtils:
 
         # Initialize cache with Jira URL from environment
         jira_url = os.environ.get('JIRA_URL', 'https://indeed.atlassian.net')
-        self.cache = JiraCache(jira_url)
-
-        # In-memory user cache: accountId -> user dict
-        self._user_cache: Dict[str, dict] = {}
+        self.cache = JiraSQLiteCache(jira_url)
 
         # Current user cache (accountId of the authenticated user)
         self._current_user_id: Optional[str] = None
@@ -837,14 +834,14 @@ class JiraUtils:
         return response
 
     def cache_user(self, user: dict) -> None:
-        """Add a user to the in-memory cache.
+        """Add a user to the SQLite cache.
 
         Args:
             user: User dict with accountId, displayName, emailAddress
         """
         account_id = user.get('accountId')
         if account_id:
-            self._user_cache[account_id] = user
+            self.cache.set_user(account_id, user)
 
     def get_cached_user(self, account_id: str) -> Optional[dict]:
         """Get user from cache by accountId.
@@ -855,7 +852,7 @@ class JiraUtils:
         Returns:
             User dict or None if not cached
         """
-        return self._user_cache.get(account_id)
+        return self.cache.get_user_by_account_id(account_id)
 
     def get_current_user_id(self) -> Optional[str]:
         """Get the accountId of the currently authenticated user.

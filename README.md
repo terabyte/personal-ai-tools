@@ -74,6 +74,23 @@ Custom field IDs vary between Jira instances. Use the `jira-discover-fields` too
 - **find-current-sprint** - Helper script to find the active sprint name for a given Jira project
 - **find-active-epics** - Helper script to find epics with recent activity for a given Jira project
 
+## Caching
+
+The tools use SQLite-based persistent caching to improve performance:
+
+**Cache Location:** `~/.cache/jira-view/jira_cache.db`
+
+**What's Cached:**
+- Metadata (link types, issue types) with 24-hour TTL
+- User information (persistent between runs)
+- Ticket data (with freshness tracking)
+- Query results with configurable TTL
+
+**Cache Management:**
+- Cache is thread-safe for concurrent access
+- Environment variable `JIRA_NO_CACHE=true` disables caching
+- Cache statistics available via jira-view's cache menu (Shift-C)
+
 ## API Usage Notes
 
 ### Authentication
