@@ -673,12 +673,21 @@ class JiraTUI:
                 if tickets and selected_idx < len(tickets):
                     current_key = tickets[selected_idx].get('key')
                     self._handle_weight_edit(stdscr, current_key, height, width)
-                    # Invalidate cache to show updated value
-                    with self.loading_lock:
-                        if current_key in self.ticket_cache:
-                            del self.ticket_cache[current_key]
-                    # Force reload of the selected ticket
-                    self._load_ticket_details_background([current_key])
+                    # Mark as stale since weight change may affect query match
+                    self.stale_tickets.add(current_key)
+                    # Refresh current ticket after weight edit (both cache and list)
+                    full_ticket = self.viewer.fetch_ticket_details(current_key)
+                    if full_ticket:
+                        with self.loading_lock:
+                            self.ticket_cache[current_key] = full_ticket
+                        # Update the tickets list entry so left pane shows updated data
+                        tickets[selected_idx] = {'key': full_ticket.get('key'), 'fields': full_ticket.get('fields', {})}
+                        if tickets is not all_tickets:
+                            # Also update all_tickets if we're in filtered view
+                            for i, t in enumerate(all_tickets):
+                                if t.get('key') == current_key:
+                                    all_tickets[i] = tickets[selected_idx]
+                                    break
             elif key == ord('s'):  # New query
                 is_edit_mode = False
                 new_query = self._handle_query_change(stdscr, current_query, is_edit_mode, height, width)
@@ -2485,10 +2494,13 @@ class JiraTUI:
             payload['fields']['labels'] = labels
 
         if 'story_points' in fields and fields['story_points']:
-            try:
-                payload['fields']['customfield_10061'] = int(fields['story_points'])
-            except ValueError:
-                return (False, f"Invalid story points value: {fields['story_points']}")
+            value = fields['story_points']
+            # Check if value is explicitly None (case-insensitive) - skip adding the field
+            if value.strip().lower() != 'none':
+                try:
+                    payload['fields']['customfield_10061'] = int(value)
+                except ValueError:
+                    return (False, f"Invalid story points value: {value}")
 
         if 'epic_link' in fields and fields['epic_link']:
             payload['fields']['customfield_10014'] = fields['epic_link']
@@ -2718,13 +2730,15 @@ class JiraTUI:
                 update_payload['fields']['labels'] = []
 
         if 'story_points' in changes:
-            if changes['story_points']:
-                try:
-                    update_payload['fields']['customfield_10061'] = int(changes['story_points'])
-                except ValueError:
-                    return (False, f"Invalid story points value: {changes['story_points']}")
-            else:
+            value = changes['story_points']
+            # Check if value is explicitly None or empty (case-insensitive)
+            if not value or value.strip().lower() == 'none':
                 update_payload['fields']['customfield_10061'] = None
+            else:
+                try:
+                    update_payload['fields']['customfield_10061'] = int(value)
+                except ValueError:
+                    return (False, f"Invalid story points value: {value}")
 
         if 'epic_link' in changes:
             if changes['epic_link']:
