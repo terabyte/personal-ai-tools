@@ -226,23 +226,25 @@ class JiraTUI:
                     # Store the full ticket data (already includes all fields from JQL query)
                     self.ticket_cache[ticket_key] = ticket
 
-                    # Populate user cache from assignee and reporter
-                    fields = ticket.get('fields', {})
-                    assignee = fields.get('assignee')
-                    reporter = fields.get('reporter')
-                    if assignee:
-                        self.viewer.utils.cache_user(assignee)
-                    if reporter:
-                        self.viewer.utils.cache_user(reporter)
-
             self.loading_count = len(tickets)
             self.loading_total = len(tickets)
             self.loading_complete = True
 
-        # Start background thread to cache transitions for all tickets (for T key feature)
+        # Start background threads (non-blocking - UI will appear immediately)
         if tickets:
-            thread = threading.Thread(target=self._load_transitions_background, args=(tickets,), daemon=True)
-            thread.start()
+            # Cache transitions for T key feature
+            threading.Thread(
+                target=self._load_transitions_background,
+                args=(tickets,),
+                daemon=True
+            ).start()
+
+            # Cache users in background (saves ~700ms at startup)
+            threading.Thread(
+                target=self._cache_users_background,
+                args=(tickets,),
+                daemon=True
+            ).start()
 
         stdscr.clear()
 
@@ -907,7 +909,8 @@ class JiraTUI:
                 'parent', 'issuelinks', 'comment', 'resolution'
             ]
             issues = self.viewer.utils.fetch_all_jql_results(
-                query_or_ticket, fields, expand='changelog', progress_callback=progress_callback, stdscr=stdscr
+                query_or_ticket, fields, expand='changelog', progress_callback=progress_callback, stdscr=stdscr,
+                skip_count=True  # Skip count query for faster startup (saves ~2 seconds)
             )
 
             # Apply consistent sorting
@@ -1002,6 +1005,31 @@ class JiraTUI:
         finally:
             # Shutdown executor without waiting for pending tasks
             executor.shutdown(wait=False)
+
+    def _cache_users_background(self, tickets: List[dict]) -> None:
+        """
+        Background thread to cache users from tickets.
+
+        Extracts assignee and reporter from all tickets and caches them
+        for display. This happens in the background after UI appears,
+        saving ~700ms at startup.
+
+        Args:
+            tickets: List of ticket dicts from query results
+        """
+        for ticket in tickets:
+            # Check if we should shutdown
+            if self._shutdown_flag:
+                break
+
+            fields = ticket.get('fields', {})
+            assignee = fields.get('assignee')
+            reporter = fields.get('reporter')
+
+            if assignee:
+                self.viewer.utils.cache_user(assignee)
+            if reporter:
+                self.viewer.utils.cache_user(reporter)
 
     def _find_exact_user_matches(self, users: List[dict], query: str) -> List[dict]:
         """Find users with exact matches on displayName, email, or email prefix.
