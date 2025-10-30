@@ -311,6 +311,42 @@ class JiraTUI:
                         scroll_offset = selected_idx
                     # Reset detail scroll when changing tickets
                     self.detail_scroll_offset = 0
+            elif ord('0') <= key <= ord('9'):  # Number prefix for vim-style movement
+                # Read the full number
+                count = self._read_number_from_key(stdscr, key)
+                if count > 0:
+                    # Wait for next command: j, k, or g
+                    stdscr.nodelay(False)
+                    next_key = stdscr.getch()
+                    stdscr.nodelay(True)
+
+                    if next_key == ord('j'):  # <count>j - move down
+                        new_idx = min(selected_idx + count, len(tickets) - 1)
+                        selected_idx = new_idx
+                        visible_height = self._get_visible_height(height)
+                        if selected_idx >= scroll_offset + visible_height:
+                            scroll_offset = selected_idx - visible_height + 1
+                        elif selected_idx < scroll_offset:
+                            scroll_offset = selected_idx
+                        self.detail_scroll_offset = 0
+                    elif next_key == ord('k'):  # <count>k - move up
+                        new_idx = max(selected_idx - count, 0)
+                        selected_idx = new_idx
+                        if selected_idx < scroll_offset:
+                            scroll_offset = selected_idx
+                        self.detail_scroll_offset = 0
+                    elif next_key == ord('g'):  # <count>g - wait for second g
+                        stdscr.nodelay(False)
+                        second_g = stdscr.getch()
+                        stdscr.nodelay(True)
+                        if second_g == ord('g'):  # <count>gg - go to line number
+                            # Line numbers are 1-indexed like vim
+                            new_idx = min(max(count - 1, 0), len(tickets) - 1)
+                            selected_idx = new_idx
+                            visible_height = self._get_visible_height(height)
+                            # Center the view if possible
+                            scroll_offset = max(0, selected_idx - visible_height // 2)
+                            self.detail_scroll_offset = 0
             elif key == 10:  # Ctrl+J or Enter - Scroll detail pane down
                 detail_height = height - 2
                 if self.detail_scroll_offset + detail_height < self.detail_total_lines:
@@ -330,11 +366,15 @@ class JiraTUI:
                 detail_height = height - 2
                 half_page = max(1, detail_height // 2)
                 self.detail_scroll_offset = max(0, self.detail_scroll_offset - half_page)
-            elif key == ord('g'):  # Go to top
-                selected_idx = 0
-                scroll_offset = 0
-                self.detail_scroll_offset = 0
-            elif key == ord('G'):  # Go to bottom
+            elif key == ord('g'):  # gg - Go to top (wait for second g)
+                stdscr.nodelay(False)
+                next_key = stdscr.getch()
+                stdscr.nodelay(True)
+                if next_key == ord('g'):  # gg - go to top
+                    selected_idx = 0
+                    scroll_offset = 0
+                    self.detail_scroll_offset = 0
+            elif key == ord('G'):  # G - Go to bottom
                 selected_idx = len(tickets) - 1
                 visible_height = self._get_visible_height(height)
                 scroll_offset = max(0, len(tickets) - visible_height)
@@ -4487,7 +4527,7 @@ class JiraTUI:
             if not self.loading_complete:
                 status_left += f" [Loading {self.loading_count}/{self.loading_total}]"
 
-        status_right = " q:quit j/k:move g/G:top/bot r:refresh e:edit t:transition f:flags c:comment w:weight v:browser ?:help "
+        status_right = " q:quit j/k:move <n>j/k:<n> gg/G:top/bot <n>gg:line r:refresh e:edit t:transition f:flags c:comment w:weight v:browser ?:help "
 
         # Calculate spacing
         padding = width - len(status_left) - len(status_right)
