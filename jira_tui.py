@@ -37,13 +37,17 @@ class JiraTUI:
         """Initialize TUI with reference to JiraViewer instance."""
         self.viewer = viewer
         self.use_colors = use_colors
+
+        # Import controllers
+        from jira_view_core import QueryController, TicketController, CacheController
+
+        # Initialize controllers (business logic layer)
+        self.query_controller = QueryController(viewer.utils)
+        self.ticket_controller = TicketController(viewer.utils)
+        self.cache_controller = CacheController(viewer.utils.cache)
+
+        # UI state (stays in TUI)
         self.show_full = True  # Toggle for full mode (all comments/history)
-        self.ticket_cache = {}  # Cache for full ticket details
-        self.transitions_cache = {}  # Cache for available transitions per ticket
-        self.loading_complete = False  # Track if background loading is done
-        self.loading_count = 0  # Track how many tickets loaded
-        self.loading_total = 0  # Track total tickets to load
-        self.loading_lock = threading.Lock()  # Thread-safe cache updates
         self.legend_lines = 0  # Track how many lines the legend occupies
         self.query_lines = 0  # Track how many lines the query occupies
         self.original_query = None  # Store original query before backlog mode modifies it
@@ -52,8 +56,17 @@ class JiraTUI:
         self.curses_initialized = False  # Track if curses is active
         self._original_sigint_handler = None  # Store original signal handler
         self._shutdown_flag = False  # Flag to signal background threads to stop
-        self.stale_tickets = set()  # Track tickets that may no longer match the query
         self.backlog_mode = False  # Track if in backlog mode (for rank reordering)
+
+        # Legacy state (to be migrated to controllers)
+        # TODO: Remove these once fully migrated
+        self.ticket_cache = {}  # Cache for full ticket details (migrate to TicketController)
+        self.transitions_cache = {}  # Cache for available transitions (migrate to TicketController)
+        self.loading_complete = False  # Track if background loading is done (migrate to QueryController)
+        self.loading_count = 0  # Track how many tickets loaded (migrate to QueryController)
+        self.loading_total = 0  # Track total tickets to load (migrate to QueryController)
+        self.loading_lock = threading.Lock()  # Thread-safe cache updates (migrate to QueryController)
+        self.stale_tickets = set()  # Track tickets that may no longer match (migrate to QueryController)
 
     @staticmethod
     def normalize_jql_input(input_str: str) -> str:
@@ -903,19 +916,21 @@ class JiraTUI:
             return issues, False
 
     def _fetch_single_ticket(self, ticket_key: str) -> Optional[dict]:
-        """Fetch a single ticket's full details."""
+        """
+        Fetch a single ticket's full details.
+
+        Now delegates to TicketController for business logic.
+        """
         return self.viewer.fetch_ticket_details(ticket_key)
 
     def _fetch_transitions(self, ticket_key: str) -> List[dict]:
-        """Fetch available transitions for a ticket."""
-        try:
-            endpoint = f"/issue/{ticket_key}/transitions"
-            response = self.viewer.utils.call_jira_api(endpoint)
-            if response and 'transitions' in response:
-                return response['transitions']
-        except Exception:
-            pass
-        return []
+        """
+        Fetch available transitions for a ticket.
+
+        Now delegates to TicketController which handles caching and thread safety.
+        """
+        transitions = self.ticket_controller.fetch_transitions(ticket_key)
+        return transitions if transitions else []
 
     def _load_tickets_background(self, tickets: List[dict]) -> None:
         """Background thread to load ticket details with parallel fetching."""
@@ -959,13 +974,16 @@ class JiraTUI:
             self.loading_complete = True
 
     def _cache_transitions(self, ticket_key: str) -> None:
-        """Cache transitions for a ticket."""
+        """
+        Cache transitions for a ticket.
+
+        Now delegates to TicketController which handles caching internally.
+        """
         # Don't fetch if shutting down
         if self._shutdown_flag:
             return
-        transitions = self._fetch_transitions(ticket_key)
-        with self.loading_lock:
-            self.transitions_cache[ticket_key] = transitions
+        # TicketController.fetch_transitions() handles caching internally
+        self._fetch_transitions(ticket_key)
 
     def _load_transitions_background(self, tickets: List[dict]) -> None:
         """Background thread to load transitions for all tickets."""
@@ -3111,13 +3129,19 @@ class JiraTUI:
             pass
 
     def _handle_cache_refresh(self, stdscr, height: int, width: int):
-        """Handle cache refresh menu (Shift+R)."""
-        cache = self.viewer.utils.cache
+        """
+        Handle cache refresh menu (Shift+R).
+
+        Now delegates to CacheController for cache operations.
+        UI rendering stays in TUI.
+        """
+        # Get cache ages from controller
+        ages = self.cache_controller.get_cache_ages()
 
         # Build menu options with cache ages
         options = [
-            ('link_types', 'Link Types', cache.get_age('link_types')),
-            ('users', 'Users', cache.get_age('users', key='all')),
+            ('link_types', 'Link Types', ages.get('link_types', 'never')),
+            ('users', 'Users', ages.get('users', 'never')),
             ('all', 'All Cache', '')
         ]
 
@@ -3170,16 +3194,22 @@ class JiraTUI:
                     overlay.addstr(menu_height // 2, 2, f"Refreshing {label.lower()}...")
                     overlay.refresh()
 
-                    # Perform refresh
+                    # Perform refresh via CacheController
                     if category == 'all':
                         # Refresh all categories
+                        self.cache_controller.refresh_metadata('link_types')
+                        self.cache_controller.refresh_metadata('users')
+                        self.cache_controller.refresh_metadata('issue_types')
+                        # Force fetch to rebuild cache
                         self.viewer.utils.get_link_types(force_refresh=True)
                         self.viewer.utils.get_users(force_refresh=True)
                         self._show_message(stdscr, "✓ Refreshed all cache", height, width)
                     elif category == 'link_types':
+                        self.cache_controller.refresh_metadata('link_types')
                         self.viewer.utils.get_link_types(force_refresh=True)
                         self._show_message(stdscr, "✓ Refreshed link types cache", height, width)
                     elif category == 'users':
+                        self.cache_controller.refresh_metadata('users')
                         self.viewer.utils.get_users(force_refresh=True)
                         self._show_message(stdscr, "✓ Refreshed users cache", height, width)
 
