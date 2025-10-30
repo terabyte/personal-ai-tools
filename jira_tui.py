@@ -240,6 +240,7 @@ class JiraTUI:
         scroll_offset = 0
         search_query = ""
         show_help = False
+        input_buffer = ""  # Shows what user is typing (for number prefixes)
 
         while True:
             # Get terminal dimensions
@@ -282,7 +283,7 @@ class JiraTUI:
 
             # Draw status bar at bottom
             self._draw_status_bar(stdscr, height - 1, width, selected_idx + 1,
-                                 len(tickets), search_query)
+                                 len(tickets), search_query, input_buffer)
 
             stdscr.refresh()
 
@@ -312,41 +313,50 @@ class JiraTUI:
                     # Reset detail scroll when changing tickets
                     self.detail_scroll_offset = 0
             elif ord('0') <= key <= ord('9'):  # Number prefix for vim-style movement
-                # Read the full number
-                count = self._read_number_from_key(stdscr, key)
-                if count > 0:
-                    # Wait for next command: j, k, or g
-                    stdscr.nodelay(False)
-                    next_key = stdscr.getch()
-                    stdscr.nodelay(True)
+                # Define callback to update input_buffer and redraw
+                def update_display(digits):
+                    nonlocal input_buffer
+                    input_buffer = digits
+                    # Redraw screen with updated input buffer
+                    stdscr.clear()
+                    self._draw_ticket_list(stdscr, tickets, selected_idx, scroll_offset,
+                                          height - 2, list_width, search_query,
+                                          self.original_query if self.backlog_mode and self.original_query else current_query)
+                    if tickets and selected_idx < len(tickets):
+                        current_ticket_key = tickets[selected_idx].get('key')
+                        self._draw_ticket_details(stdscr, current_ticket_key, detail_x,
+                                                 height - 2, detail_width)
+                    self._draw_status_bar(stdscr, height - 1, width, selected_idx + 1,
+                                         len(tickets), search_query, input_buffer)
+                    stdscr.refresh()
 
-                    if next_key == ord('j'):  # <count>j - move down
-                        new_idx = min(selected_idx + count, len(tickets) - 1)
-                        selected_idx = new_idx
-                        visible_height = self._get_visible_height(height)
-                        if selected_idx >= scroll_offset + visible_height:
-                            scroll_offset = selected_idx - visible_height + 1
-                        elif selected_idx < scroll_offset:
-                            scroll_offset = selected_idx
-                        self.detail_scroll_offset = 0
-                    elif next_key == ord('k'):  # <count>k - move up
-                        new_idx = max(selected_idx - count, 0)
-                        selected_idx = new_idx
-                        if selected_idx < scroll_offset:
-                            scroll_offset = selected_idx
-                        self.detail_scroll_offset = 0
-                    elif next_key == ord('g'):  # <count>g - wait for second g
-                        stdscr.nodelay(False)
-                        second_g = stdscr.getch()
-                        stdscr.nodelay(True)
-                        if second_g == ord('g'):  # <count>gg - go to line number
-                            # Line numbers are 1-indexed like vim
-                            new_idx = min(max(count - 1, 0), len(tickets) - 1)
-                            selected_idx = new_idx
-                            visible_height = self._get_visible_height(height)
-                            # Center the view if possible
-                            scroll_offset = max(0, selected_idx - visible_height // 2)
-                            self.detail_scroll_offset = 0
+                # Read the full number with display callback
+                count = self._read_number_from_key(stdscr, key, update_display)
+
+                # Clear input buffer after reading
+                input_buffer = ""
+
+                # Wait for next command: j, k, g, or G
+                stdscr.nodelay(False)
+                next_key = stdscr.getch()
+                stdscr.nodelay(True)
+
+                if next_key == ord('j'):  # <count>j - move down
+                    selected_idx, scroll_offset = self._handle_vim_navigation(
+                        stdscr, tickets, selected_idx, scroll_offset, height, count, 'j')
+                elif next_key == ord('k'):  # <count>k - move up
+                    selected_idx, scroll_offset = self._handle_vim_navigation(
+                        stdscr, tickets, selected_idx, scroll_offset, height, count, 'k')
+                elif next_key == ord('g'):  # <count>g - wait for second g
+                    stdscr.nodelay(False)
+                    second_g = stdscr.getch()
+                    stdscr.nodelay(True)
+                    if second_g == ord('g'):  # <count>gg - go to line number
+                        selected_idx, scroll_offset = self._handle_vim_navigation(
+                            stdscr, tickets, selected_idx, scroll_offset, height, count, 'gg')
+                elif next_key == ord('G'):  # <count>G - go to line (same as gg in vim)
+                    selected_idx, scroll_offset = self._handle_vim_navigation(
+                        stdscr, tickets, selected_idx, scroll_offset, height, count, 'G')
             elif key == 10:  # Ctrl+J or Enter - Scroll detail pane down
                 detail_height = height - 2
                 if self.detail_scroll_offset + detail_height < self.detail_total_lines:
@@ -371,14 +381,11 @@ class JiraTUI:
                 next_key = stdscr.getch()
                 stdscr.nodelay(True)
                 if next_key == ord('g'):  # gg - go to top
-                    selected_idx = 0
-                    scroll_offset = 0
-                    self.detail_scroll_offset = 0
+                    selected_idx, scroll_offset = self._handle_vim_navigation(
+                        stdscr, tickets, selected_idx, scroll_offset, height, 0, 'gg')
             elif key == ord('G'):  # G - Go to bottom
-                selected_idx = len(tickets) - 1
-                visible_height = self._get_visible_height(height)
-                scroll_offset = max(0, len(tickets) - visible_height)
-                self.detail_scroll_offset = 0
+                selected_idx, scroll_offset = self._handle_vim_navigation(
+                    stdscr, tickets, selected_idx, scroll_offset, height, 0, 'G')
             elif key == ord('r'):  # Refresh
                 # Remember currently selected ticket
                 current_ticket_key = tickets[selected_idx].get('key') if tickets and selected_idx < len(tickets) else None
@@ -2821,9 +2828,93 @@ class JiraTUI:
 
         return (True, "")
 
-    def _read_number_from_key(self, stdscr, first_key: int) -> int:
-        """Read a multi-digit number starting with first_key."""
+    def _handle_vim_navigation(self, stdscr, tickets: List[dict], selected_idx: int,
+                               scroll_offset: int, height: int, count: int, command: str) -> tuple:
+        """Handle vim-style navigation commands uniformly.
+
+        Args:
+            stdscr: Curses screen
+            tickets: List of tickets
+            selected_idx: Current selection index
+            scroll_offset: Current scroll offset
+            height: Screen height
+            count: Number prefix (0 means no prefix)
+            command: Command character ('j', 'k', 'gg', 'G')
+
+        Returns:
+            Tuple of (new_selected_idx, new_scroll_offset)
+        """
+        visible_height = self._get_visible_height(height)
+
+        if command == 'j':
+            # <count>j - move down by count (default 1)
+            move_by = count if count > 0 else 1
+            new_idx = min(selected_idx + move_by, len(tickets) - 1)
+            selected_idx = new_idx
+            # Adjust scroll if needed
+            if selected_idx >= scroll_offset + visible_height:
+                scroll_offset = selected_idx - visible_height + 1
+            elif selected_idx < scroll_offset:
+                scroll_offset = selected_idx
+
+        elif command == 'k':
+            # <count>k - move up by count (default 1)
+            move_by = count if count > 0 else 1
+            new_idx = max(selected_idx - move_by, 0)
+            selected_idx = new_idx
+            if selected_idx < scroll_offset:
+                scroll_offset = selected_idx
+
+        elif command == 'gg':
+            # <count>gg - go to line count (1-indexed), or top if count=0
+            if count == 0:
+                # gg with no count - go to top
+                selected_idx = 0
+                scroll_offset = 0
+            else:
+                # <count>gg - go to line number (1-indexed)
+                new_idx = min(max(count - 1, 0), len(tickets) - 1)
+                selected_idx = new_idx
+                # Center the view
+                scroll_offset = max(0, selected_idx - visible_height // 2)
+
+        elif command == 'G':
+            # <count>G - go to count lines from end, or bottom if count=0
+            if count == 0:
+                # G with no count - go to bottom
+                selected_idx = len(tickets) - 1
+                scroll_offset = max(0, len(tickets) - visible_height)
+            else:
+                # <count>G - go to count from the end (like vim)
+                # In vim, 50G goes to line 50 (absolute), not 50 from end
+                # Let me check vim behavior... actually 50G goes to line 50
+                # So it's the same as 50gg
+                new_idx = min(max(count - 1, 0), len(tickets) - 1)
+                selected_idx = new_idx
+                # Center the view
+                scroll_offset = max(0, selected_idx - visible_height // 2)
+
+        # Reset detail scroll when changing tickets
+        self.detail_scroll_offset = 0
+
+        return (selected_idx, scroll_offset)
+
+    def _read_number_from_key(self, stdscr, first_key: int, display_callback=None) -> int:
+        """Read a multi-digit number starting with first_key.
+
+        Args:
+            stdscr: Curses screen
+            first_key: The first digit key pressed
+            display_callback: Optional callback(digits_str) to update display while typing
+
+        Returns:
+            The parsed number, or 0 if no valid number
+        """
         digits = [chr(first_key)]
+
+        # Show initial digit
+        if display_callback:
+            display_callback(''.join(digits))
 
         # Set short timeout for additional digits
         stdscr.timeout(500)
@@ -2833,6 +2924,8 @@ class JiraTUI:
                 next_key = stdscr.getch()
                 if ord('0') <= next_key <= ord('9'):
                     digits.append(chr(next_key))
+                    if display_callback:
+                        display_callback(''.join(digits))
                 else:
                     # Not a digit, push it back (by not consuming it)
                     break
@@ -2844,7 +2937,7 @@ class JiraTUI:
         try:
             return int(''.join(digits))
         except ValueError:
-            return 1  # Default to 1 if parse fails
+            return 0  # Default to 0 if parse fails
 
     def _handle_backlog_move(self, stdscr, tickets: List[dict], all_tickets: List[dict],
                             selected_idx: int, scroll_offset: int, current_query: str,
@@ -4510,7 +4603,7 @@ class JiraTUI:
                 pass
 
     def _draw_status_bar(self, stdscr, y: int, width: int, current: int,
-                        total: int, search_query: str):
+                        total: int, search_query: str, input_buffer: str = ""):
         """Draw status bar at bottom showing commands and position."""
         # Left side: mode indicator and search status
         if self.backlog_mode:
@@ -4521,6 +4614,10 @@ class JiraTUI:
         # Add search indicator if active
         if search_query:
             status_left += f" (Search: {search_query})"
+
+        # Add input buffer if user is typing
+        if input_buffer:
+            status_left += f" [{input_buffer}]"
 
         # Add loading indicator if still loading
         with self.loading_lock:
