@@ -6,16 +6,29 @@ This repo contains tools I have built to enable me to use AI more easily in my d
 
 This project now has comprehensive test coverage with a focus on thread safety and concurrency correctness.
 
+**⚠️ IMPORTANT: Run tests before committing any code changes!**
+
 **Run tests:**
 ```bash
+./test.sh quick     # REQUIRED before commits - Fast tests (~5s)
 ./test.sh           # Deep check with coverage (≥65%)
-./test.sh quick     # Fast tests without coverage (~5s)
 ./test.sh long      # Verify no deadlocks (run 10x, ~50s)
 ```
 
+**Pre-Commit Checklist:**
+1. ✅ Run `./test.sh quick` - All tests must pass
+2. ✅ Verify no new threading issues introduced
+3. ✅ Check that startup remains <1 second
+4. ✅ Commit with descriptive message
+
 **Current Status:** 22 tests, 100% pass rate, 65% coverage, <6s execution time
 
-See [TESTING_SUMMARY.md](TESTING_SUMMARY.md) for details.
+**Why tests matter:** Our tests have already caught concurrency bugs during development that would have caused production hangs. The test suite includes:
+- 7 critical tests (startup performance, threading, correctness)
+- 11 threading tests (race conditions, deadlocks, stress tests)
+- Thread-safety verification for all concurrent operations
+
+See [TESTING_SUMMARY.md](TESTING_SUMMARY.md) for comprehensive details.
 
 ## License
 
