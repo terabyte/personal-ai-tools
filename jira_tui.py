@@ -197,13 +197,11 @@ class JiraTUI:
             curses.init_pair(7, curses.COLOR_WHITE, -1)    # White/bright
 
         # Fetch tickets with progress display
-        stdscr.addstr(0, 0, "Counting tickets...")
-        stdscr.refresh()
-
+        # Note: The "Counting tickets..." display happens inside fetch_all_jql_results via stdscr
         def progress_callback(fetched, total):
             """Update screen with fetch progress."""
             stdscr.clear()
-            stdscr.addstr(0, 0, f"Fetching tickets: {fetched}/{total}...")
+            stdscr.addstr(0, 0, f"Loading tickets: {fetched}/{total}...")
             stdscr.refresh()
 
         tickets, single_ticket_mode = self._fetch_tickets(query_or_ticket, progress_callback, stdscr)
@@ -909,8 +907,7 @@ class JiraTUI:
                 'parent', 'issuelinks', 'comment', 'resolution'
             ]
             issues = self.viewer.utils.fetch_all_jql_results(
-                query_or_ticket, fields, expand='changelog', progress_callback=progress_callback, stdscr=stdscr,
-                skip_count=True  # Skip count query for faster startup (saves ~2 seconds)
+                query_or_ticket, fields, expand='changelog', progress_callback=progress_callback, stdscr=stdscr
             )
 
             # Apply consistent sorting

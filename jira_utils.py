@@ -179,10 +179,13 @@ class JiraUtils:
         # Get total count first with a fast query (unless skipped)
         if not skip_count:
             total_count, interrupted = self.get_jql_count(jql, stdscr)
-            # If we have a total count, ensure max_items is at least that high
-            # (either from interruption or from complete count)
-            if total_count > 0:
-                max_items = max(max_items, total_count)
+            if interrupted:
+                # User interrupted counting - only fetch what was counted so far
+                max_items = total_count
+            elif total_count > max_items:
+                # Full count completed and exceeds default limit - fetch all
+                max_items = total_count
+            # Otherwise use the default max_items (1000)
         else:
             total_count = None
 
