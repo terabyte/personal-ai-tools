@@ -1,0 +1,102 @@
+{
+  "search_result": {
+    "issues": [
+      {
+        "key": "TEST-1",
+        "fields": {
+          "summary": "Test ticket 1",
+          "status": {"name": "In Progress"},
+          "updated": "2025-01-15T10:00:00.000+0000",
+          "assignee": {
+            "accountId": "user1",
+            "displayName": "Test User 1",
+            "emailAddress": "user1@test.com"
+          },
+          "priority": {"name": "High"},
+          "created": "2025-01-10T10:00:00.000+0000"
+        }
+      },
+      {
+        "key": "TEST-2",
+        "fields": {
+          "summary": "Test ticket 2",
+          "status": {"name": "Done"},
+          "updated": "2025-01-15T11:00:00.000+0000",
+          "assignee": {
+            "accountId": "user2",
+            "displayName": "Test User 2",
+            "emailAddress": "user2@test.com"
+          },
+          "priority": {"name": "Medium"},
+          "created": "2025-01-12T10:00:00.000+0000"
+        }
+      },
+      {
+        "key": "TEST-3",
+        "fields": {
+          "summary": "Test ticket 3",
+          "status": {"name": "To Do"},
+          "updated": "2025-01-14T10:00:00.000+0000",
+          "assignee": null,
+          "priority": {"name": "Low"},
+          "created": "2025-01-14T09:00:00.000+0000"
+        }
+      }
+    ],
+    "nextPageToken": null,
+    "total": 3
+  },
+  "tickets": [
+    {
+      "key": "TEST-1",
+      "fields": {
+        "summary": "Test ticket 1",
+        "status": {"name": "In Progress"},
+        "updated": "2025-01-15T10:00:00.000+0000",
+        "assignee": {
+          "accountId": "user1",
+          "displayName": "Test User 1",
+          "emailAddress": "user1@test.com"
+        }
+      }
+    },
+    {
+      "key": "TEST-2",
+      "fields": {
+        "summary": "Test ticket 2",
+        "status": {"name": "Done"},
+        "updated": "2025-01-15T11:00:00.000+0000",
+        "assignee": {
+          "accountId": "user2",
+          "displayName": "Test User 2",
+          "emailAddress": "user2@test.com"
+        }
+      }
+    },
+    {
+      "key": "TEST-3",
+      "fields": {
+        "summary": "Test ticket 3",
+        "status": {"name": "To Do"},
+        "updated": "2025-01-14T10:00:00.000+0000",
+        "assignee": null
+      }
+    }
+  ],
+  "single_ticket": {
+    "key": "TEST-1",
+    "fields": {
+      "summary": "Test ticket 1",
+      "status": {"name": "In Progress"},
+      "updated": "2025-01-15T10:00:00.000+0000",
+      "created": "2025-01-10T10:00:00.000+0000",
+      "assignee": {
+        "accountId": "user1",
+        "displayName": "Test User 1",
+        "emailAddress": "user1@test.com"
+      },
+      "priority": {"name": "High"},
+      "description": "This is a test ticket for testing purposes."
+    }
+  }
+}
