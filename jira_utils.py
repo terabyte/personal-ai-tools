@@ -406,6 +406,89 @@ class JiraUtils:
 
         return sorted(issues, key=get_rank_sort_key)
 
+    def rank_issues(self, issues: List[str], rank_before: str = None, rank_after: str = None,
+                    rank_custom_field_id: int = 10022) -> Tuple[bool, str]:
+        """
+        Rank issues before or after a target issue using Jira Agile API.
+
+        Args:
+            issues: List of issue keys to rank (max 50)
+            rank_before: Position issues before this issue key
+            rank_after: Position issues after this issue key (mutually exclusive with rank_before)
+            rank_custom_field_id: Custom field ID for rank (default 10022)
+
+        Returns:
+            (success: bool, error_message: str)
+
+        Example:
+            # Move PROJ-123 before PROJ-456
+            success, error = utils.rank_issues(['PROJ-123'], rank_before='PROJ-456')
+        """
+        if not issues:
+            return (False, "No issues provided")
+
+        if len(issues) > 50:
+            return (False, "Can only rank up to 50 issues at once")
+
+        if not rank_before and not rank_after:
+            return (False, "Must specify either rank_before or rank_after")
+
+        if rank_before and rank_after:
+            return (False, "Cannot specify both rank_before and rank_after")
+
+        # Build request payload
+        payload = {
+            "issues": issues,
+            "rankCustomFieldId": rank_custom_field_id
+        }
+
+        if rank_before:
+            payload["rankBeforeIssue"] = rank_before
+        else:
+            payload["rankAfterIssue"] = rank_after
+
+        # Call Jira Agile API
+        # Note: Use relative path because jira-api prepends /rest/api/3
+        try:
+            response = self.call_jira_api('../../agile/1.0/issue/rank', method='PUT', data=payload)
+
+            # Empty response (200) means success
+            if response is not None and not response:
+                return (True, "")
+
+            # Check for errors
+            if response is None:
+                return (False, "API call failed")
+
+            if 'errorMessages' in response:
+                return (False, "; ".join(response['errorMessages']))
+
+            if 'errors' in response:
+                error_list = [f"{k}: {v}" for k, v in response['errors'].items()]
+                return (False, "; ".join(error_list))
+
+            # 207 multi-status - check individual issue results
+            if isinstance(response, dict) and 'entries' in response:
+                failed = []
+                for entry in response['entries']:
+                    if entry.get('status') != 200:
+                        issue_key = entry.get('issueKey', 'unknown')
+                        errors = entry.get('errors', {})
+                        if errors:
+                            error_msg = "; ".join([f"{k}: {v}" for k, v in errors.items()])
+                            failed.append(f"{issue_key}: {error_msg}")
+                        else:
+                            failed.append(f"{issue_key}: status {entry.get('status')}")
+
+                if failed:
+                    return (False, "; ".join(failed))
+
+            # Success
+            return (True, "")
+
+        except Exception as e:
+            return (False, f"Exception: {str(e)}")
+
     def print_status_legend(self, use_colors: bool, context: str = 'full') -> None:
         """Print status legend based on context."""
         if context == 'backlog':

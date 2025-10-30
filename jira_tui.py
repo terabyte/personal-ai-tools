@@ -15,6 +15,7 @@ import threading
 import signal
 import atexit
 import re
+import time
 from urllib.parse import quote
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Optional, Tuple
@@ -44,12 +45,15 @@ class JiraTUI:
         self.loading_total = 0  # Track total tickets to load
         self.loading_lock = threading.Lock()  # Thread-safe cache updates
         self.legend_lines = 0  # Track how many lines the legend occupies
+        self.query_lines = 0  # Track how many lines the query occupies
+        self.original_query = None  # Store original query before backlog mode modifies it
         self.detail_scroll_offset = 0  # Track right pane scroll position
         self.detail_total_lines = 0  # Track total lines in right pane
         self.curses_initialized = False  # Track if curses is active
         self._original_sigint_handler = None  # Store original signal handler
         self._shutdown_flag = False  # Flag to signal background threads to stop
         self.stale_tickets = set()  # Track tickets that may no longer match the query
+        self.backlog_mode = False  # Track if in backlog mode (for rank reordering)
 
     @staticmethod
     def normalize_jql_input(input_str: str) -> str:
@@ -265,8 +269,10 @@ class JiraTUI:
                     pass
 
             # Draw ticket list in left pane
+            # Show original query if in backlog mode (current_query has ORDER BY Rank appended)
+            display_query = self.original_query if self.backlog_mode and self.original_query else current_query
             self._draw_ticket_list(stdscr, tickets, selected_idx, scroll_offset,
-                                   height - 2, list_width, search_query)
+                                   height - 2, list_width, search_query, display_query)
 
             # Draw ticket details in right pane
             if tickets and selected_idx < len(tickets):
@@ -337,7 +343,9 @@ class JiraTUI:
                 # Remember currently selected ticket
                 current_ticket_key = tickets[selected_idx].get('key') if tickets and selected_idx < len(tickets) else None
 
+                # current_query is already modified in backlog mode (has ORDER BY Rank)
                 all_tickets, _ = self._fetch_tickets(current_query)
+
                 tickets = all_tickets
 
                 # Try to find the previously selected ticket in refreshed results
@@ -406,6 +414,87 @@ class JiraTUI:
                 self._handle_cache_refresh(stdscr, height, width)
             elif key == ord('F'):  # Toggle full mode (capital F)
                 self.show_full = not self.show_full
+            elif key == ord('b'):  # Toggle backlog mode
+                self.backlog_mode = not self.backlog_mode
+
+                # Remember the currently selected ticket key
+                current_key = tickets[selected_idx].get('key') if tickets and selected_idx < len(tickets) else None
+
+                if self.backlog_mode:
+                    # Entering backlog mode - save original query and modify to use Rank ordering
+                    self.original_query = current_query
+                    current_query = self._add_rank_order_to_query(current_query)
+
+                    # Re-fetch with rank ordering
+                    all_tickets, _ = self._fetch_tickets(current_query)
+                    tickets = all_tickets
+                    # Find the same ticket in the new order
+                    if current_key:
+                        new_idx = next((i for i, t in enumerate(tickets) if t.get('key') == current_key), 0)
+                        selected_idx = new_idx
+                    elif selected_idx >= len(tickets):
+                        selected_idx = 0
+                    # Adjust scroll to keep selection visible
+                    visible_height = self._get_visible_height(height)
+                    if selected_idx < scroll_offset:
+                        scroll_offset = selected_idx
+                    elif selected_idx >= scroll_offset + visible_height:
+                        scroll_offset = selected_idx - visible_height + 1
+                else:
+                    # Exiting backlog mode - restore original query
+                    if self.original_query:
+                        current_query = self.original_query
+                        self.original_query = None
+
+                    # Re-fetch with original query (restores original order)
+                    all_tickets, _ = self._fetch_tickets(current_query)
+                    # Filter all_tickets to match current tickets (in case of search)
+                    ticket_keys = {t.get('key') for t in tickets}
+                    tickets = [t for t in all_tickets if t.get('key') in ticket_keys]
+                    # Find the same ticket in the restored order
+                    if current_key:
+                        new_idx = next((i for i, t in enumerate(tickets) if t.get('key') == current_key), 0)
+                        selected_idx = new_idx
+                    # Adjust scroll to keep selection visible
+                    visible_height = self._get_visible_height(height)
+                    if selected_idx < scroll_offset:
+                        scroll_offset = selected_idx
+                    elif selected_idx >= scroll_offset + visible_height:
+                        scroll_offset = selected_idx - visible_height + 1
+            elif key == ord('m') and self.backlog_mode:  # Move up in backlog
+                # Wait for next key
+                stdscr.nodelay(False)
+                next_key = stdscr.getch()
+                stdscr.nodelay(True)
+
+                if next_key == ord('m') or next_key == ord('0'):  # mm or m0 = top
+                    tickets, selected_idx, scroll_offset = self._handle_backlog_move(
+                        stdscr, tickets, all_tickets, selected_idx, scroll_offset,
+                        current_query, 'top', 0, height, width
+                    )
+                elif ord('1') <= next_key <= ord('9'):  # mN = up N
+                    count = self._read_number_from_key(stdscr, next_key)
+                    tickets, selected_idx, scroll_offset = self._handle_backlog_move(
+                        stdscr, tickets, all_tickets, selected_idx, scroll_offset,
+                        current_query, 'up', count, height, width
+                    )
+            elif key == ord('M') and self.backlog_mode:  # Move down in backlog
+                # Wait for next key
+                stdscr.nodelay(False)
+                next_key = stdscr.getch()
+                stdscr.nodelay(True)
+
+                if next_key == ord('M'):  # MM = bottom
+                    tickets, selected_idx, scroll_offset = self._handle_backlog_move(
+                        stdscr, tickets, all_tickets, selected_idx, scroll_offset,
+                        current_query, 'bottom', 0, height, width
+                    )
+                elif ord('1') <= next_key <= ord('9'):  # MN = down N
+                    count = self._read_number_from_key(stdscr, next_key)
+                    tickets, selected_idx, scroll_offset = self._handle_backlog_move(
+                        stdscr, tickets, all_tickets, selected_idx, scroll_offset,
+                        current_query, 'down', count, height, width
+                    )
             elif key == ord('v'):  # Open in browser
                 if tickets and selected_idx < len(tickets):
                     current_key = tickets[selected_idx].get('key')
@@ -427,6 +516,8 @@ class JiraTUI:
                 # Filter tickets by search query or restore full list if empty
                 if search_query:
                     tickets = self._filter_tickets(all_tickets, search_query)
+                    # Tickets should already be in rank order if in backlog mode
+                    # (since all_tickets was fetched with ORDER BY Rank)
                     selected_idx = 0
                     scroll_offset = 0
                 else:
@@ -443,12 +534,12 @@ class JiraTUI:
                     else:
                         selected_idx = 0
 
-                    # Adjust scroll to keep selected item visible
-                    visible_height = self._get_visible_height(height)
-                    if selected_idx < scroll_offset:
-                        scroll_offset = selected_idx
-                    elif selected_idx >= scroll_offset + visible_height:
-                        scroll_offset = max(0, selected_idx - visible_height + 1)
+                # Adjust scroll to keep selected item visible (both cases)
+                visible_height = self._get_visible_height(height)
+                if selected_idx < scroll_offset:
+                    scroll_offset = selected_idx
+                elif selected_idx >= scroll_offset + visible_height:
+                    scroll_offset = max(0, selected_idx - visible_height + 1)
             elif key == ord('t') or key == ord('T'):  # Transition
                 if tickets and selected_idx < len(tickets):
                     current_key = tickets[selected_idx].get('key')
@@ -578,6 +669,16 @@ class JiraTUI:
                             thread.start()
                     except Exception as e:
                         self._show_message(stdscr, f"✗ Error loading new ticket: {str(e)}", height, width)
+            elif key == ord('w') or key == ord('W'):  # Weight (story points)
+                if tickets and selected_idx < len(tickets):
+                    current_key = tickets[selected_idx].get('key')
+                    self._handle_weight_edit(stdscr, current_key, height, width)
+                    # Invalidate cache to show updated value
+                    with self.loading_lock:
+                        if current_key in self.ticket_cache:
+                            del self.ticket_cache[current_key]
+                    # Force reload of the selected ticket
+                    self._load_ticket_details_background([current_key])
             elif key == ord('s'):  # New query
                 is_edit_mode = False
                 new_query = self._handle_query_change(stdscr, current_query, is_edit_mode, height, width)
@@ -688,6 +789,18 @@ class JiraTUI:
         else:
             # Sort by key ascending alphabetically
             return sorted(tickets, key=lambda t: t.get('key', ''))
+
+    def _add_rank_order_to_query(self, query: str) -> str:
+        """Replace any existing ORDER BY with ORDER BY Rank ASC."""
+        query_upper = query.upper()
+        if 'ORDER BY' in query_upper:
+            # Query already has ORDER BY - remove it and add our own
+            order_pos = query_upper.find('ORDER BY')
+            before_order = query[:order_pos].rstrip()
+            return f"{before_order} ORDER BY Rank ASC"
+        else:
+            # No ORDER BY - add it
+            return f"{query} ORDER BY Rank ASC"
 
     def _fetch_tickets(self, query_or_ticket: str, progress_callback=None) -> tuple:
         """
@@ -1775,6 +1888,148 @@ class JiraTUI:
                 error_message = f"Unexpected error: {str(e)}"
                 # Continue loop to re-open editor with error
 
+    def _handle_weight_edit(self, stdscr, ticket_key: str, height: int, width: int):
+        """Handle quick weight/story points edit (w key)."""
+        import tempfile
+        import subprocess
+        import os
+
+        # Get current ticket
+        with self.loading_lock:
+            ticket = self.ticket_cache.get(ticket_key)
+
+        if not ticket:
+            ticket = self.viewer.fetch_ticket_details(ticket_key)
+
+        if not ticket:
+            self._show_message(stdscr, "Failed to load ticket", height, width)
+            return
+
+        error_message = None
+        while True:
+            # Create template
+            fields = ticket.get('fields', {})
+            current_points = fields.get('customfield_10061', '')
+
+            template = []
+            if error_message:
+                template.append(f"# ERROR: {error_message}")
+                template.append("#")
+
+            template.extend([
+                f"# Edit Story Points for {ticket_key}",
+                "# Set empty to clear story points",
+                "# Lines starting with # are ignored",
+                "",
+                f"story_points: {current_points}",
+                "",
+                "# Optional comment (leave empty for no comment):",
+                "comment:",
+                "",
+                "",
+                "__END_OF_COMMENT__",
+            ])
+
+            # Write to temp file
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+                temp_path = f.name
+                f.write('\n'.join(template))
+
+            # Open vim
+            curses.def_prog_mode()
+            curses.endwin()
+
+            try:
+                subprocess.call(['vim', temp_path])
+            finally:
+                curses.reset_prog_mode()
+                stdscr.refresh()
+
+            # Parse result
+            try:
+                with open(temp_path, 'r') as f:
+                    text = f.read()
+
+                os.unlink(temp_path)
+
+                parsed = self._parse_weight_template(text)
+                if parsed is None:
+                    self._show_message(stdscr, "Weight edit cancelled", height, width)
+                    return
+
+                new_points = parsed.get('story_points', '')
+                comment_text = parsed.get('comment', '')
+
+                # Check if changed
+                old_points = str(current_points) if current_points else ''
+                if new_points == old_points and not comment_text:
+                    self._show_message(stdscr, "No changes", height, width)
+                    return
+
+                # Update issue
+                changes = {}
+                if new_points != old_points:
+                    changes['story_points'] = new_points
+
+                success, result = self._update_jira_issue(ticket_key, changes, comment_text)
+
+                if success:
+                    msg = f"✓ Updated {ticket_key}"
+                    if new_points:
+                        msg += f" (story points: {new_points})"
+                    else:
+                        msg += " (story points cleared)"
+                    self._show_message(stdscr, msg, height, width)
+                    return
+                else:
+                    error_message = result
+                    # Continue loop to retry
+
+            except Exception as e:
+                error_message = f"Error: {str(e)}"
+                # Continue loop to retry
+
+    def _parse_weight_template(self, text: str) -> Optional[dict]:
+        """Parse weight edit template."""
+        lines = text.split('\n')
+        result = {}
+        current_field = None
+        field_lines = []
+
+        for line in lines:
+            # Skip comments
+            if line.strip().startswith('#'):
+                continue
+
+            # Check for field markers
+            if line.strip() == '__END_OF_COMMENT__':
+                if current_field:
+                    result[current_field] = '\n'.join(field_lines).strip()
+                current_field = None
+                field_lines = []
+                continue
+
+            # Check for field start
+            if ':' in line and not current_field:
+                field, value = line.split(':', 1)
+                field = field.strip()
+                value = value.strip()
+
+                if field == 'comment':
+                    current_field = 'comment'
+                    field_lines = []
+                elif field == 'story_points':
+                    result['story_points'] = value
+            elif current_field:
+                # Accumulate multi-line field
+                field_lines.append(line)
+
+        # Check if completely empty (cancelled)
+        if not any(result.values()):
+            return None
+
+        return result
+
     def _handle_query_change(self, stdscr, current_query: str, is_edit_mode: bool, height: int, width: int) -> Optional[str]:
         """Handle changing the query (s/S key). Returns new query or None if cancelled."""
         import tempfile
@@ -2510,6 +2765,165 @@ class JiraTUI:
                 return (False, f"Failed to add comment: {str(e)}")
 
         return (True, "")
+
+    def _read_number_from_key(self, stdscr, first_key: int) -> int:
+        """Read a multi-digit number starting with first_key."""
+        digits = [chr(first_key)]
+
+        # Set short timeout for additional digits
+        stdscr.timeout(500)
+
+        while True:
+            try:
+                next_key = stdscr.getch()
+                if ord('0') <= next_key <= ord('9'):
+                    digits.append(chr(next_key))
+                else:
+                    # Not a digit, push it back (by not consuming it)
+                    break
+            except:
+                break
+
+        stdscr.timeout(-1)  # Reset to blocking
+
+        try:
+            return int(''.join(digits))
+        except ValueError:
+            return 1  # Default to 1 if parse fails
+
+    def _handle_backlog_move(self, stdscr, tickets: List[dict], all_tickets: List[dict],
+                            selected_idx: int, scroll_offset: int, current_query: str,
+                            direction: str, count: int, height: int, width: int):
+        """
+        Handle moving an issue in the backlog.
+
+        Args:
+            stdscr: Curses screen
+            tickets: Current ticket list
+            all_tickets: Full ticket list
+            selected_idx: Currently selected index
+            scroll_offset: Current scroll offset
+            current_query: Current JQL query
+            direction: 'up', 'down', 'top', or 'bottom'
+            count: Number of positions to move (ignored for top/bottom)
+            height: Screen height
+            width: Screen width
+
+        Returns:
+            (new_tickets, new_selected_idx, new_scroll_offset)
+        """
+        if not tickets or selected_idx >= len(tickets):
+            self._show_message(stdscr, "No ticket selected", height, width)
+            return tickets, selected_idx, scroll_offset
+
+        if len(tickets) == 1:
+            self._show_message(stdscr, "Only one ticket in list", height, width)
+            return tickets, selected_idx, scroll_offset
+
+        current_ticket_key = tickets[selected_idx].get('key')
+        current_pos = selected_idx
+
+        # Calculate target position
+        if direction == 'top':
+            target_pos = 0
+        elif direction == 'bottom':
+            target_pos = len(tickets) - 1
+        elif direction == 'up':
+            target_pos = max(0, current_pos - count)
+        elif direction == 'down':
+            target_pos = min(len(tickets) - 1, current_pos + count)
+        else:
+            return tickets, selected_idx, scroll_offset
+
+        # Check if already at target
+        if current_pos == target_pos:
+            if target_pos == 0:
+                self._show_message(stdscr, "Already at top", height, width)
+            elif target_pos == len(tickets) - 1:
+                self._show_message(stdscr, "Already at bottom", height, width)
+            else:
+                self._show_message(stdscr, "Already at position", height, width)
+            return tickets, selected_idx, scroll_offset
+
+        # Determine anchor issue for ranking
+        if target_pos == 0:
+            # Moving to top - rank before first issue
+            anchor_key = tickets[0].get('key')
+            rank_before = anchor_key
+            rank_after = None
+        elif target_pos == len(tickets) - 1:
+            # Moving to bottom - rank after last issue
+            anchor_key = tickets[-1].get('key')
+            rank_before = None
+            rank_after = anchor_key
+        elif target_pos < current_pos:
+            # Moving up - rank before target position
+            anchor_key = tickets[target_pos].get('key')
+            rank_before = anchor_key
+            rank_after = None
+        else:
+            # Moving down - rank after target position
+            anchor_key = tickets[target_pos].get('key')
+            rank_before = None
+            rank_after = anchor_key
+
+        # Show moving message
+        self._show_message(stdscr, f"Moving {current_ticket_key}...", height, width, duration=300)
+
+        # Call rank API
+        success, error = self.viewer.utils.rank_issues(
+            [current_ticket_key],
+            rank_before=rank_before,
+            rank_after=rank_after
+        )
+
+        if not success:
+            self._show_message(stdscr, f"✗ Failed: {error}", height, width, duration=3000)
+            return tickets, selected_idx, scroll_offset
+
+        # Give Jira a moment to update its database after rank change
+        time.sleep(0.5)
+
+        # Re-fetch query with basic fields (fast refresh)
+        self._show_message(stdscr, "Refreshing...", height, width, duration=100)
+
+        basic_fields = ['key', 'summary', 'status', 'priority', 'assignee',
+                       'updated', 'customfield_10061', 'customfield_10021',
+                       'customfield_10023', 'customfield_10022']  # Include rank!
+
+        try:
+            # current_query is already modified in backlog mode (has ORDER BY Rank)
+            new_all_tickets = self.viewer.utils.fetch_all_jql_results(current_query, basic_fields)
+
+            # Tickets are already in rank order from Jira
+            new_tickets_sorted = new_all_tickets
+
+            # Find new position of moved ticket
+            new_idx = next((i for i, t in enumerate(new_tickets_sorted)
+                           if t.get('key') == current_ticket_key), 0)
+
+            # Update all_tickets and tickets (both sorted in backlog mode)
+            all_tickets = new_tickets_sorted
+            tickets = new_tickets_sorted
+
+            # Adjust scroll to keep selection visible
+            visible_height = self._get_visible_height(height)
+            if new_idx < scroll_offset:
+                new_scroll = new_idx
+            elif new_idx >= scroll_offset + visible_height:
+                new_scroll = new_idx - visible_height + 1
+            else:
+                new_scroll = scroll_offset
+
+            # Show success
+            self._show_message(stdscr, f"✓ Moved to position {new_idx + 1}", height, width)
+
+            # Note: Full details will be loaded on-demand when tickets are selected
+            return tickets, new_idx, new_scroll
+
+        except Exception as e:
+            self._show_message(stdscr, f"✗ Refresh failed: {str(e)}", height, width, duration=3000)
+            return tickets, selected_idx, scroll_offset
 
     def _show_message(self, stdscr, message: str, height: int, width: int, duration: int = 1500):
         """Show a temporary message overlay.
@@ -3651,9 +4065,9 @@ class JiraTUI:
         return len(lines)
 
     def _get_visible_height(self, height: int) -> int:
-        """Calculate visible height for ticket list accounting for legend and header."""
-        # height - 2 (status bar) - 1 (header) - legend_lines - 1 (separator)
-        return height - 4 - self.legend_lines
+        """Calculate visible height for ticket list accounting for header, legend, separators, and query."""
+        # height - 2 (status bar) - 1 (header) - legend_lines - 1 (sep before query) - query_lines - 1 (sep after query)
+        return height - 5 - self.legend_lines - self.query_lines
 
     def _format_date_with_relative(self, date_str: str) -> Tuple[str, str, int]:
         """Format date with relative time. Returns (date_str, relative_str, color_pair)."""
@@ -3681,30 +4095,75 @@ class JiraTUI:
 
     def _draw_ticket_list(self, stdscr, tickets: List[dict], selected_idx: int,
                          scroll_offset: int, max_height: int, max_width: int,
-                         search_query: str):
+                         search_query: str, current_query: str):
         """Draw the ticket list in the left pane."""
+        y_offset = 0
+
         # Header
         try:
             header = f" Tickets ({len(tickets)})"
             if search_query:
                 header += f" [Filter: {search_query}]"
-            stdscr.addstr(0, 0, header[:max_width], curses.A_BOLD)
+            stdscr.addstr(y_offset, 0, header[:max_width], curses.A_BOLD)
+            y_offset += 1
         except curses.error:
             pass
 
         # Draw legend
-        legend_lines = self._draw_legend(stdscr, 1, max_width)
+        legend_lines = self._draw_legend(stdscr, y_offset, max_width)
+        y_offset += legend_lines
 
-        # Draw separator
-        separator_y = 1 + legend_lines
+        # Draw separator before query
         try:
-            stdscr.addstr(separator_y, 0, "=" * max_width)
+            stdscr.addstr(y_offset, 0, "=" * max_width)
+            y_offset += 1
         except curses.error:
             pass
 
-        # Draw tickets (start after header + legend + separator)
-        ticket_start_y = separator_y + 1
-        visible_height = max_height - ticket_start_y
+        # Draw wrapped query
+        query_prefix = "Query: "
+        query_lines = 0
+        try:
+            # Wrap the query to fit the width
+            query_text = current_query
+            lines_to_draw = []
+
+            # First line with prefix
+            if len(query_prefix + query_text) <= max_width:
+                lines_to_draw.append(query_prefix + query_text)
+            else:
+                # Need to wrap
+                first_line_len = max_width - len(query_prefix)
+                lines_to_draw.append(query_prefix + query_text[:first_line_len])
+                remaining = query_text[first_line_len:]
+
+                # Subsequent lines (no prefix)
+                while remaining:
+                    lines_to_draw.append(remaining[:max_width])
+                    remaining = remaining[max_width:]
+
+            # Draw all query lines
+            for line in lines_to_draw:
+                stdscr.addstr(y_offset, 0, line[:max_width])
+                y_offset += 1
+                query_lines += 1
+        except curses.error:
+            pass
+
+        # Store query lines for height calculation
+        self.query_lines = query_lines
+
+        # Draw separator after query
+        try:
+            stdscr.addstr(y_offset, 0, "=" * max_width)
+            y_offset += 1
+        except curses.error:
+            pass
+
+        # Draw tickets (start after header + legend + separators + query)
+        ticket_start_y = y_offset
+        # Calculate how many lines we can draw (inclusive range from ticket_start_y to max_height)
+        visible_height = max_height - ticket_start_y + 1
         for i in range(scroll_offset, min(scroll_offset + visible_height, len(tickets))):
             y = i - scroll_offset + ticket_start_y
 
@@ -3998,21 +4457,46 @@ class JiraTUI:
     def _draw_status_bar(self, stdscr, y: int, width: int, current: int,
                         total: int, search_query: str):
         """Draw status bar at bottom showing commands and position."""
-        status_left = f" {current}/{total}"
+        # Left side: mode indicator and search status
+        if self.backlog_mode:
+            status_left = " [BACKLOG: mN↑ MN↓ mm⭡ MM⭣ b=exit]"
+        else:
+            status_left = f" [NORMAL] {current}/{total}"
+
+        # Add search indicator if active
+        if search_query:
+            status_left += f" (Search: {search_query})"
 
         # Add loading indicator if still loading
         with self.loading_lock:
             if not self.loading_complete:
                 status_left += f" [Loading {self.loading_count}/{self.loading_total}]"
 
-        status_right = " q:quit j/k:move g/G:top/bot r:refresh e:edit t:transition f:flags c:comment v:browser y:copy-url ?:help "
+        status_right = " q:quit j/k:move g/G:top/bot r:refresh e:edit t:transition f:flags c:comment w:weight v:browser ?:help "
 
         # Calculate spacing
         padding = width - len(status_left) - len(status_right)
         status = status_left + " " * max(0, padding) + status_right
 
         try:
-            stdscr.addstr(y, 0, status[:width - 1], curses.A_REVERSE)
+            if self.use_colors:
+                # Determine the styled portion (mode indicator)
+                if self.backlog_mode:
+                    mode_text = " [BACKLOG: mN↑ MN↓ mm⭡ MM⭣ b=exit]"
+                    mode_color = curses.color_pair(3) | curses.A_BOLD | curses.A_REVERSE
+                else:
+                    mode_text = " [NORMAL]"
+                    mode_color = curses.color_pair(2) | curses.A_BOLD | curses.A_REVERSE  # Green for normal
+
+                # Draw mode indicator in color
+                stdscr.addstr(y, 0, mode_text, mode_color)
+
+                # Draw rest of status bar
+                rest_of_status = status[len(mode_text):]
+                stdscr.addstr(y, len(mode_text), rest_of_status[:width - len(mode_text) - 1], curses.A_REVERSE)
+            else:
+                # No colors - simple status bar
+                stdscr.addstr(y, 0, status[:width - 1], curses.A_REVERSE)
         except curses.error:
             pass
 
@@ -4037,8 +4521,10 @@ class JiraTUI:
             "  r          Refresh current view",
             "  R          Refresh cache (link types, users)",
             "  e          Edit ticket",
+            "  w          Edit story points (weight)",
             "  f          Toggle flags",
             "  F          Toggle full mode (all comments)",
+            "  b          Toggle backlog mode (rank ordering)",
             "  v          Open ticket in browser",
             "  y          Copy ticket URL to clipboard (yank)",
             "  t          Transition ticket",
@@ -4050,6 +4536,12 @@ class JiraTUI:
             "  /          Search/filter tickets",
             "  ?          Show this help",
             "  q          Quit",
+            "",
+            "Backlog Mode (press 'b' to toggle):",
+            "  mN         Move up N positions (e.g., m3)",
+            "  MN         Move down N positions (e.g., M2)",
+            "  mm / m0    Move to top",
+            "  MM         Move to bottom",
             "",
             "Press any key to close help"
         ]
