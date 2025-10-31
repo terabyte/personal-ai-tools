@@ -547,23 +547,30 @@ class JiraTUI:
                 if self.backlog_mode:
                     # Entering backlog mode - save original query and modify to use Rank ordering
                     self.original_query = current_query
-                    current_query = self._add_rank_order_to_query(current_query)
+                    transformed_query = self._add_rank_order_to_query(current_query)
 
-                    # Re-fetch with rank ordering
-                    all_tickets, _ = self._fetch_tickets(current_query, stdscr=stdscr)
-                    tickets = all_tickets
-                    # Find the same ticket in the new order
-                    if current_key:
-                        new_idx = next((i for i, t in enumerate(tickets) if t.get('key') == current_key), 0)
-                        selected_idx = new_idx
-                    elif selected_idx >= len(tickets):
-                        selected_idx = 0
-                    # Adjust scroll to keep selection visible
-                    visible_height = self._get_visible_height(height)
-                    if selected_idx < scroll_offset:
-                        scroll_offset = selected_idx
-                    elif selected_idx >= scroll_offset + visible_height:
-                        scroll_offset = selected_idx - visible_height + 1
+                    # Check if query already has ORDER BY Rank ASC (optimization)
+                    if transformed_query.strip().upper() == current_query.strip().upper():
+                        # Query is already sorted by rank - no need to reload
+                        current_query = transformed_query
+                        self._show_message(stdscr, "✓ Backlog mode (already sorted by rank)", height, width, duration=1000)
+                    else:
+                        # Need to re-fetch with rank ordering
+                        current_query = transformed_query
+                        all_tickets, _ = self._fetch_tickets(current_query, stdscr=stdscr)
+                        tickets = all_tickets
+                        # Find the same ticket in the new order
+                        if current_key:
+                            new_idx = next((i for i, t in enumerate(tickets) if t.get('key') == current_key), 0)
+                            selected_idx = new_idx
+                        elif selected_idx >= len(tickets):
+                            selected_idx = 0
+                        # Adjust scroll to keep selection visible
+                        visible_height = self._get_visible_height(height)
+                        if selected_idx < scroll_offset:
+                            scroll_offset = selected_idx
+                        elif selected_idx >= scroll_offset + visible_height:
+                            scroll_offset = selected_idx - visible_height + 1
                 else:
                     # Exiting backlog mode - restore original query
                     if self.original_query:
