@@ -572,26 +572,35 @@ class JiraTUI:
                         elif selected_idx >= scroll_offset + visible_height:
                             scroll_offset = selected_idx - visible_height + 1
                 else:
-                    # Exiting backlog mode - restore original query
+                    # Exiting backlog mode - check if we need to restore original query
                     if self.original_query:
-                        current_query = self.original_query
-                        self.original_query = None
+                        # Check if the original query was already rank-sorted (optimization)
+                        transformed = self._add_rank_order_to_query(self.original_query)
+                        if transformed.strip().upper() == self.original_query.strip().upper():
+                            # Original query was already rank-sorted - no need to reload
+                            current_query = self.original_query
+                            self.original_query = None
+                            self._show_message(stdscr, "✓ Exited backlog mode (no reload needed)", height, width, duration=1000)
+                        else:
+                            # Need to restore original order
+                            current_query = self.original_query
+                            self.original_query = None
 
-                    # Re-fetch with original query (restores original order)
-                    all_tickets, _ = self._fetch_tickets(current_query, stdscr=stdscr)
-                    # Filter all_tickets to match current tickets (in case of search)
-                    ticket_keys = {t.get('key') for t in tickets}
-                    tickets = [t for t in all_tickets if t.get('key') in ticket_keys]
-                    # Find the same ticket in the restored order
-                    if current_key:
-                        new_idx = next((i for i, t in enumerate(tickets) if t.get('key') == current_key), 0)
-                        selected_idx = new_idx
-                    # Adjust scroll to keep selection visible
-                    visible_height = self._get_visible_height(height)
-                    if selected_idx < scroll_offset:
-                        scroll_offset = selected_idx
-                    elif selected_idx >= scroll_offset + visible_height:
-                        scroll_offset = selected_idx - visible_height + 1
+                            # Re-fetch with original query (restores original order)
+                            all_tickets, _ = self._fetch_tickets(current_query, stdscr=stdscr)
+                            # Filter all_tickets to match current tickets (in case of search)
+                            ticket_keys = {t.get('key') for t in tickets}
+                            tickets = [t for t in all_tickets if t.get('key') in ticket_keys]
+                            # Find the same ticket in the restored order
+                            if current_key:
+                                new_idx = next((i for i, t in enumerate(tickets) if t.get('key') == current_key), 0)
+                                selected_idx = new_idx
+                            # Adjust scroll to keep selection visible
+                            visible_height = self._get_visible_height(height)
+                            if selected_idx < scroll_offset:
+                                scroll_offset = selected_idx
+                            elif selected_idx >= scroll_offset + visible_height:
+                                scroll_offset = selected_idx - visible_height + 1
             elif key == ord('m') and self.backlog_mode:  # Move up in backlog
                 # Wait for next key
                 stdscr.nodelay(False)
