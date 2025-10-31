@@ -58,6 +58,11 @@ class JiraTUI:
         self._shutdown_flag = False  # Flag to signal background threads to stop
         self.backlog_mode = False  # Track if in backlog mode (for rank reordering)
 
+        # Dashboard/query state
+        self.default_query = None  # The user's default query (initial or edited)
+        self.current_dashboard_name = None  # Name of currently active dashboard (None = default)
+        self.saved_dashboards = {}  # Dict of name -> JQL query loaded from config
+
         # Legacy state (to be migrated to controllers)
         # TODO: Remove these once fully migrated
         self.ticket_cache = {}  # Cache for full ticket details (migrate to TicketController)
@@ -106,6 +111,46 @@ class JiraTUI:
         if self._original_sigint_handler:
             signal.signal(signal.SIGINT, self._original_sigint_handler)
         sys.exit(0)
+
+    def _load_dashboards(self):
+        """Load saved dashboards from teams.conf file."""
+        import configparser
+
+        config_file = self.viewer.script_dir / "teams.conf"
+        if not config_file.exists():
+            return  # No config file, no dashboards
+
+        config = configparser.ConfigParser()
+        try:
+            config.read(config_file)
+            if 'dashboards' in config:
+                self.saved_dashboards = dict(config['dashboards'])
+        except Exception:
+            pass  # Silently ignore config errors
+
+    def _get_query_display_info(self, query: str) -> Tuple[str, int]:
+        """
+        Get display name and color pair for current query.
+
+        Returns:
+            Tuple of (display_name, color_pair_id)
+            - Default query: ("Default: <query>", green background)
+            - Saved dashboard: ("<name>: <query>", hashed color)
+        """
+        if self.current_dashboard_name is None:
+            # Default query - green background (pair 10)
+            return f"Default: {query}", 10
+        else:
+            # Saved dashboard - hash the name to get consistent color
+            return f"{self.current_dashboard_name}: {query}", self._hash_to_color_pair(self.current_dashboard_name)
+
+    def _hash_to_color_pair(self, name: str) -> int:
+        """
+        Hash a dashboard name to a visually distinct color pair (11-17).
+        Colors: yellow, blue, red, cyan, magenta, white, bright_green
+        """
+        hash_val = hash(name) % 7
+        return 11 + hash_val  # Pairs 11-17
 
     def run(self, query_or_ticket: str) -> int:
         """
@@ -187,7 +232,7 @@ class JiraTUI:
         if curses.has_colors():
             curses.start_color()
             curses.use_default_colors()
-            # Define color pairs
+            # Define color pairs (1-7 for general use)
             curses.init_pair(1, curses.COLOR_GREEN, -1)    # Green
             curses.init_pair(2, curses.COLOR_YELLOW, -1)   # Yellow
             curses.init_pair(3, curses.COLOR_BLUE, -1)     # Blue
@@ -195,6 +240,20 @@ class JiraTUI:
             curses.init_pair(5, curses.COLOR_CYAN, -1)     # Cyan
             curses.init_pair(6, curses.COLOR_MAGENTA, -1)  # Magenta
             curses.init_pair(7, curses.COLOR_WHITE, -1)    # White/bright
+            # Dashboard query color pairs (10 for default, 11-17 for saved)
+            curses.init_pair(10, curses.COLOR_BLACK, curses.COLOR_GREEN)    # Default query - green bg
+            curses.init_pair(11, curses.COLOR_BLACK, curses.COLOR_YELLOW)   # Dashboard 1 - yellow bg
+            curses.init_pair(12, curses.COLOR_BLACK, curses.COLOR_BLUE)     # Dashboard 2 - blue bg
+            curses.init_pair(13, curses.COLOR_WHITE, curses.COLOR_RED)      # Dashboard 3 - red bg
+            curses.init_pair(14, curses.COLOR_BLACK, curses.COLOR_CYAN)     # Dashboard 4 - cyan bg
+            curses.init_pair(15, curses.COLOR_BLACK, curses.COLOR_MAGENTA)  # Dashboard 5 - magenta bg
+            curses.init_pair(16, curses.COLOR_BLACK, curses.COLOR_WHITE)    # Dashboard 6 - white bg
+            curses.init_pair(17, curses.COLOR_BLACK, curses.COLOR_GREEN)    # Dashboard 7 - green bg
+
+        # Load dashboards from config and initialize default query
+        self._load_dashboards()
+        self.default_query = query_or_ticket
+        self.current_dashboard_name = None  # Start with default query
 
         # Fetch tickets with progress display
         # Note: The "Counting tickets..." display happens inside fetch_all_jql_results via stdscr
@@ -753,11 +812,11 @@ class JiraTUI:
                                 if t.get('key') == current_key:
                                     all_tickets[i] = tickets[selected_idx]
                                     break
-            elif key == ord('s'):  # New query
-                is_edit_mode = False
-                new_query = self._handle_query_change(stdscr, current_query, is_edit_mode, height, width)
-                if new_query:
-                    # Re-fetch tickets with new query
+            elif key == ord('d'):  # Dashboard selector
+                result = self._handle_dashboard_selector(stdscr, height, width)
+                if result:
+                    new_query, dashboard_name = result
+                    # Re-fetch tickets with selected query/dashboard
                     stdscr.addstr(0, 0, "Loading tickets...")
                     stdscr.refresh()
 
@@ -766,6 +825,7 @@ class JiraTUI:
                         if tickets:
                             # Reset state
                             current_query = new_query
+                            self.current_dashboard_name = dashboard_name
                             all_tickets = tickets
                             selected_idx = 0
                             scroll_offset = 0
@@ -790,15 +850,22 @@ class JiraTUI:
                             thread = threading.Thread(target=self._load_transitions_background, args=(tickets,), daemon=True)
                             thread.start()
 
-                            self._show_message(stdscr, f"✓ Loaded {len(tickets)} tickets", height, width)
+                            dash_label = "Default" if dashboard_name is None else dashboard_name
+                            self._show_message(stdscr, f"✓ Loaded {len(tickets)} tickets ({dash_label})", height, width)
                         else:
                             self._show_message(stdscr, "No tickets found", height, width)
                     except Exception as e:
                         self._show_message(stdscr, f"✗ Error: {str(e)}", height, width)
-            elif key == ord('S'):  # Edit query
-                is_edit_mode = True
-                new_query = self._handle_query_change(stdscr, current_query, is_edit_mode, height, width)
+            elif key == ord('s') or key == ord('S'):  # Edit default query
+                # Always switch to default query and edit it
+                is_edit_mode = (key == ord('S'))  # S = edit, s = new
+                # Start with default query for editing
+                new_query = self._handle_query_change(stdscr, self.default_query if is_edit_mode else current_query, is_edit_mode, height, width)
                 if new_query:
+                    # Update default query
+                    self.default_query = new_query
+                    self.current_dashboard_name = None  # Switch to default
+
                     # Re-fetch tickets with new query
                     stdscr.addstr(0, 0, "Loading tickets...")
                     stdscr.refresh()
@@ -832,7 +899,7 @@ class JiraTUI:
                             thread = threading.Thread(target=self._load_transitions_background, args=(tickets,), daemon=True)
                             thread.start()
 
-                            self._show_message(stdscr, f"✓ Loaded {len(tickets)} tickets", height, width)
+                            self._show_message(stdscr, f"✓ Loaded {len(tickets)} tickets (Default)", height, width)
                         else:
                             self._show_message(stdscr, "No tickets found", height, width)
                     except Exception as e:
@@ -3153,6 +3220,125 @@ class JiraTUI:
         except curses.error:
             pass
 
+    def _handle_dashboard_selector(self, stdscr, height: int, width: int) -> Optional[Tuple[str, str]]:
+        """
+        Show dashboard selector overlay.
+
+        Returns:
+            Tuple of (query, dashboard_name) if selected, None if cancelled
+            - For default: (self.default_query, None)
+            - For saved dashboard: (dashboard_jql, dashboard_name)
+        """
+        if not self.saved_dashboards:
+            self._show_message(stdscr, "No saved dashboards in teams.conf", height, width)
+            return None
+
+        # Build dashboard list: default first, then saved dashboards
+        dashboards = [("Default", self.default_query, None)]
+        for name, jql in sorted(self.saved_dashboards.items()):
+            dashboards.append((name, jql, name))
+
+        # Interactive selector
+        selected_idx = 0
+        search_filter = ""
+        filtered_dashboards = dashboards[:]
+
+        menu_height = min(len(filtered_dashboards) + 5, height - 4)
+        menu_width = min(80, width - 4)
+        start_y = (height - menu_height) // 2
+        start_x = (width - menu_width) // 2
+
+        try:
+            overlay = curses.newwin(menu_height, menu_width, start_y, start_x)
+
+            while True:
+                overlay.clear()
+                overlay.box()
+                overlay.addstr(0, 2, " Select Dashboard ", curses.A_BOLD)
+
+                # Show search filter if active
+                if search_filter:
+                    overlay.addstr(1, 2, f"Filter: {search_filter}")
+                    list_start_y = 2
+                else:
+                    list_start_y = 1
+
+                # Filter dashboards by search
+                if search_filter:
+                    filtered_dashboards = [
+                        d for d in dashboards
+                        if search_filter.lower() in d[0].lower() or search_filter.lower() in d[1].lower()
+                    ]
+                else:
+                    filtered_dashboards = dashboards[:]
+
+                # Keep selected_idx in bounds
+                if selected_idx >= len(filtered_dashboards):
+                    selected_idx = max(0, len(filtered_dashboards) - 1)
+
+                # Draw dashboard list
+                max_items = menu_height - list_start_y - 2
+                for i, (name, jql, db_name) in enumerate(filtered_dashboards[:max_items]):
+                    y = list_start_y + 1 + i
+                    if y >= menu_height - 1:
+                        break
+
+                    # Truncate display
+                    display_text = f"{i+1}. {name}: {jql}"
+                    display_text = display_text[:menu_width - 4]
+
+                    # Highlight selected item
+                    if i == selected_idx:
+                        # Use dashboard color for preview
+                        if db_name is None:
+                            color = curses.color_pair(10)  # Green for default
+                        else:
+                            color = curses.color_pair(self._hash_to_color_pair(db_name))
+                        overlay.addstr(y, 2, display_text, color | curses.A_BOLD)
+                    else:
+                        overlay.addstr(y, 2, display_text)
+
+                overlay.addstr(menu_height - 1, 2, "↑↓:Move Enter:Select /:Filter Esc:Cancel", curses.A_DIM)
+                overlay.refresh()
+
+                # Handle input
+                key = overlay.getch()
+
+                if key == 27:  # Escape
+                    return None
+                elif key == 10 or key == curses.KEY_ENTER:  # Enter
+                    if filtered_dashboards:
+                        _, jql, db_name = filtered_dashboards[selected_idx]
+                        return (jql, db_name)
+                elif key == curses.KEY_UP or key == ord('k'):
+                    selected_idx = max(0, selected_idx - 1)
+                elif key == curses.KEY_DOWN or key == ord('j'):
+                    selected_idx = min(len(filtered_dashboards) - 1, selected_idx + 1)
+                elif key == ord('/'):
+                    # Start filter mode
+                    search_filter = ""
+                    curses.echo()
+                    overlay.addstr(1, 2, "Filter: " + " " * (menu_width - 12))
+                    overlay.refresh()
+                    filter_input = overlay.getstr(1, 10, menu_width - 14)
+                    curses.noecho()
+                    search_filter = filter_input.decode('utf-8', errors='ignore')
+                    selected_idx = 0
+                elif key >= ord('1') and key <= ord('9'):
+                    # Jump to numbered item
+                    num = key - ord('0')
+                    if num <= len(filtered_dashboards):
+                        selected_idx = num - 1
+                elif key == 8 or key == curses.KEY_BACKSPACE:
+                    # Backspace - clear filter
+                    search_filter = ""
+                    selected_idx = 0
+
+        except curses.error:
+            pass
+
+        return None
+
     def _handle_cache_refresh(self, stdscr, height: int, width: int):
         """
         Handle cache refresh menu (Shift+R).
@@ -4336,31 +4522,25 @@ class JiraTUI:
         except curses.error:
             pass
 
-        # Draw wrapped query
-        query_prefix = "Query: "
+        # Draw color-coded query with dashboard name
         query_lines = 0
         try:
-            # Wrap the query to fit the width
-            query_text = current_query
+            # Get display info (name and color) for current query
+            display_text, color_pair = self._get_query_display_info(current_query)
+
+            # Wrap the query display to fit the width
             lines_to_draw = []
+            remaining = display_text
+            while remaining:
+                lines_to_draw.append(remaining[:max_width])
+                remaining = remaining[max_width:]
 
-            # First line with prefix
-            if len(query_prefix + query_text) <= max_width:
-                lines_to_draw.append(query_prefix + query_text)
-            else:
-                # Need to wrap
-                first_line_len = max_width - len(query_prefix)
-                lines_to_draw.append(query_prefix + query_text[:first_line_len])
-                remaining = query_text[first_line_len:]
-
-                # Subsequent lines (no prefix)
-                while remaining:
-                    lines_to_draw.append(remaining[:max_width])
-                    remaining = remaining[max_width:]
-
-            # Draw all query lines
+            # Draw all query lines with color
             for line in lines_to_draw:
-                stdscr.addstr(y_offset, 0, line[:max_width])
+                if curses.has_colors():
+                    stdscr.addstr(y_offset, 0, line[:max_width], curses.color_pair(color_pair) | curses.A_BOLD)
+                else:
+                    stdscr.addstr(y_offset, 0, line[:max_width], curses.A_BOLD)
                 y_offset += 1
                 query_lines += 1
         except curses.error:
@@ -4751,8 +4931,9 @@ class JiraTUI:
             "  c          Add comment to ticket",
             "  l          Manage issue links",
             "  n          Create new issue",
-            "  s          New query (JQL or ticket key)",
-            "  S          Edit current query",
+            "  d          Select saved dashboard",
+            "  s          New default query (JQL or ticket key)",
+            "  S          Edit default query",
             "  /          Search/filter tickets",
             "  ?          Show this help",
             "  q          Quit",

@@ -43,3 +43,40 @@ backlog_jql = project IN (PROJ1,PROJ2) AND sprint is EMPTY AND statusCategory !=
 [minimal-team]
 display_name = Minimal Team Example
 projects = PROJ3
+
+# ============================================================================
+# Saved Dashboards for jira-view
+# ============================================================================
+# These are saved JQL queries that can be quickly accessed in jira-view by
+# pressing 'd' to open the dashboard selector.
+#
+# Format: dashboard_name = JQL query
+#
+# The dashboard name should be short and descriptive. When you press 'd' in
+# jira-view, you can type the name, its number, or use arrow keys to select.
+# Each dashboard will be displayed with a unique color for easy identification.
+
+[dashboards]
+# Active work across all projects
+my-work = assignee = currentUser() AND statusCategory != Done ORDER BY updated DESC
+
+# Recent updates in the last 2 days
+recent = updated >= -2d ORDER BY updated DESC
+
+# High priority items
+urgent = priority IN (Highest, High, Critical, Blocker) AND statusCategory != Done ORDER BY priority DESC, updated DESC
+
+# Items pending review
+reviews = status IN ("In Review", "Pending Review") ORDER BY updated ASC
+
+# Blocked items needing attention
+blocked = status = Blocked OR Flagged IS NOT EMPTY ORDER BY updated ASC
+
+# Upcoming due dates (next 7 days)
+due-soon = duedate <= 7d AND statusCategory != Done ORDER BY duedate ASC
+
+# Items in triage
+triage = status = "Pending Triage" ORDER BY created ASC
+
+# My team's current sprint
+sprint = sprint IN openSprints() AND sprint NOT IN futureSprints() AND statusCategory != Done ORDER BY Rank ASC
