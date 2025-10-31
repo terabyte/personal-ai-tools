@@ -55,6 +55,10 @@ projects = PROJ3
 # The dashboard name should be short and descriptive. When you press 'd' in
 # jira-view, you can type the name, its number, or use arrow keys to select.
 # Each dashboard will be displayed with a unique color for easy identification.
+#
+# Ordering reminders:
+# date DESC => recent to less recent
+# rank ASC => most important to least important
 
 [dashboards]
 # Active work across all projects
